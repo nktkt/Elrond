@@ -169,7 +169,15 @@ async fn handle(
                         text(*status, body.render(&ctx))
                     }
                     ActionRt::Static { root, kind } => {
-                        static_files::serve(root, kind, &path, &headers, &method).await
+                        static_files::serve(
+                            root,
+                            kind,
+                            &path,
+                            &headers,
+                            &method,
+                            loc.autoindex,
+                        )
+                        .await
                     }
                     ActionRt::Proxy {
                         balancer,

@@ -130,6 +130,9 @@ pub struct Location {
     /// Per-location `gzip on|off;` override. `None` falls back to the
     /// server-level setting.
     pub gzip: Option<bool>,
+    /// `autoindex on|off;` — render a directory listing when the path
+    /// resolves to a directory and no `index.html` is present.
+    pub autoindex: bool,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

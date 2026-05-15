@@ -352,6 +352,7 @@ fn build_location(
     let mut add_headers = Vec::new();
     let mut expires: Option<std::time::Duration> = None;
     let mut gzip: Option<bool> = None;
+    let mut autoindex: bool = false;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -414,8 +415,12 @@ fn build_location(
             "proxy_cache_bypass" | "proxy_no_cache" | "proxy_cache_lock"
             | "proxy_cache_use_stale" | "proxy_cache_revalidate"
             | "proxy_cache_methods" | "proxy_cache_min_uses" => None,
+            "autoindex" => {
+                autoindex = parse_on_off(d.args.first().map(String::as_str), d.line)?;
+                None
+            }
             "include" => None,
-            "index" | "try_files" | "autoindex"
+            "index" | "try_files"
             | "proxy_buffering" | "proxy_read_timeout"
             | "proxy_connect_timeout" | "proxy_send_timeout"
             | "proxy_next_upstream" | "proxy_hide_header"
@@ -459,6 +464,7 @@ fn build_location(
         add_headers,
         expires,
         gzip,
+        autoindex,
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,

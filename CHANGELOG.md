@@ -2,6 +2,39 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.14.0] - 2026-05-15
+
+**`autoindex` directory listings.** 60 unit tests. Pre-alpha.
+
+### Added
+
+- **`autoindex on|off;`** at location level. When a request resolves
+  to a directory with no `index.html`, Elrond renders an HTML listing
+  instead of returning `404`.
+- Listing format: minimal HTML5, sorted directories-first then by
+  name, `../` link when not at the root of the location, percent-
+  encoded `href` for entry names. Dotfiles (`.foo`) are skipped.
+
+### Tests
+
+- 60 unit tests (unchanged).
+- **Smoke-tested:**
+  - `GET /files/` rendered the HTML listing with subdirectories
+    sorted before files; `.hidden` was correctly omitted.
+  - `GET /files/alpha.txt` continued to serve the file directly
+    (autoindex only activates on directories).
+  - `GET /files/sub/` rendered a `../` link plus the subdir's
+    contents.
+  - A sibling location without `autoindex on;` still returned `404`
+    for the directory request.
+
+### Known limitations
+
+- No size / mtime columns yet — name-only.
+- No trailing-slash redirect (Nginx returns `301` for the no-slash
+  form; Elrond serves it as if the slash were present).
+- No styling toggles or `autoindex_format` JSON/XML modes.
+
 ## [0.13.0] - 2026-05-15
 
 **Polish: `$scheme` honors TLS, server-level `add_header` cascade, `$host`
@@ -624,6 +657,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.14.0]: https://github.com/nktkt/Elrond/releases/tag/v0.14.0
 [0.13.0]: https://github.com/nktkt/Elrond/releases/tag/v0.13.0
 [0.12.0]: https://github.com/nktkt/Elrond/releases/tag/v0.12.0
 [0.11.0]: https://github.com/nktkt/Elrond/releases/tag/v0.11.0

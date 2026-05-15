@@ -59,6 +59,9 @@ pub struct LocationRt {
     pub expires: Option<Duration>,
     /// Per-location gzip override. `None` -> use the server-level default.
     pub gzip: Option<bool>,
+    /// `autoindex on;` — render a directory listing when the path is a
+    /// directory and `index.html` is absent.
+    pub autoindex: bool,
 }
 
 pub enum ActionRt {
@@ -386,6 +389,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 add_headers: Arc::new(compile_headers(&merged_headers)?),
                 expires: loc.expires,
                 gzip: loc.gzip,
+                autoindex: loc.autoindex,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);
