@@ -22,6 +22,9 @@ struct Listener {
     state_tx: watch::Sender<Arc<ServerState>>,
     shutdown_tx: watch::Sender<bool>,
     join: JoinHandle<()>,
+    /// True if the listener terminates TLS. Reload only updates application
+    /// state in-place; TLS cert reload is deferred to a later release.
+    tls: bool,
 }
 
 pub struct Supervisor {
@@ -36,8 +39,8 @@ impl Supervisor {
         runtime: app::Runtime,
     ) -> std::io::Result<Self> {
         let mut listeners = Vec::with_capacity(runtime.servers.len());
-        for (addr, state) in runtime.servers {
-            listeners.push(spawn_listener(addr, state).await?);
+        for (addr, state, tls) in runtime.servers {
+            listeners.push(spawn_listener(addr, state, tls).await?);
         }
         Ok(Self {
             config_path,
@@ -73,12 +76,22 @@ impl Supervisor {
             }
         };
 
-        let mut wanted: HashMap<SocketAddr, Arc<ServerState>> =
-            runtime.servers.into_iter().collect();
+        let mut wanted: HashMap<
+            SocketAddr,
+            (Arc<ServerState>, Option<Arc<rustls::ServerConfig>>),
+        > = runtime
+            .servers
+            .into_iter()
+            .map(|(a, s, t)| (a, (s, t)))
+            .collect();
 
         let mut kept = Vec::with_capacity(self.listeners.len());
         for l in self.listeners.drain(..) {
-            if let Some(new_state) = wanted.remove(&l.addr) {
+            if let Some((new_state, new_tls)) = wanted.remove(&l.addr) {
+                if l.tls && new_tls.is_some() {
+                    // TLS cert reload is deferred; warn if user changed it.
+                    info!("reload: TLS listener {} keeps its certificate (cert reload comes later)", l.addr);
+                }
                 if l.state_tx.send(new_state).is_err() {
                     warn!("reload: listener on {} has gone away", l.addr);
                 }
@@ -93,8 +106,8 @@ impl Supervisor {
             }
         }
 
-        for (addr, state) in wanted {
-            match spawn_listener(addr, state).await {
+        for (addr, (state, tls)) in wanted {
+            match spawn_listener(addr, state, tls).await {
                 Ok(l) => {
                     info!("reload: started new listener on {addr}");
                     kept.push(l);
@@ -127,12 +140,15 @@ impl Supervisor {
 async fn spawn_listener(
     addr: SocketAddr,
     state: Arc<ServerState>,
+    tls: Option<Arc<rustls::ServerConfig>>,
 ) -> std::io::Result<Listener> {
     let listener = TcpListener::bind(addr).await?;
     let (state_tx, state_rx) = watch::channel(state);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let tls_acceptor = tls.as_ref().map(|c| tokio_rustls::TlsAcceptor::from(c.clone()));
+    let is_tls = tls.is_some();
     let join = tokio::spawn(async move {
-        if let Err(e) = server::run(addr, listener, state_rx, shutdown_rx).await {
+        if let Err(e) = server::run(addr, listener, tls_acceptor, state_rx, shutdown_rx).await {
             error!("listener on {addr}: {e}");
         }
     });
@@ -141,5 +157,6 @@ async fn spawn_listener(
         state_tx,
         shutdown_tx,
         join,
+        tls: is_tls,
     })
 }

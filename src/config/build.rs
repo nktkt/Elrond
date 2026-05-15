@@ -166,14 +166,18 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
             "listen" => {
                 let a = arg1(d)?;
                 if d.args.iter().any(|x| x == "ssl") {
-                    return Err(format!(
-                        "line {}: 'listen ... ssl' (TLS) is not supported yet",
-                        d.line
-                    ));
+                    server.tls = true;
                 }
                 server.listen = Some(parse_listen(&a, d.line)?);
             }
             "server_name" => server.server_name = d.args.first().cloned(),
+            "ssl_certificate" => server.ssl_certificate = Some(arg1(d)?),
+            "ssl_certificate_key" => server.ssl_certificate_key = Some(arg1(d)?),
+            "ssl_protocols" | "ssl_ciphers" | "ssl_prefer_server_ciphers"
+            | "ssl_session_cache" | "ssl_session_timeout" | "ssl_session_tickets"
+            | "ssl_dhparam" | "ssl_ecdh_curve" | "ssl_stapling" => {
+                /* Accepted for forward compatibility; not yet applied. */
+            }
             "root" => { /* handled in first pass */ }
             "location" => {
                 if d.args.is_empty() {
@@ -213,6 +217,14 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
 
     if server.listen.is_none() {
         return Err("a 'server' block is missing its 'listen' directive".into());
+    }
+    if server.tls {
+        if server.ssl_certificate.is_none() || server.ssl_certificate_key.is_none() {
+            return Err(format!(
+                "'listen ... ssl' on {} requires both 'ssl_certificate' and 'ssl_certificate_key'",
+                server.listen.unwrap()
+            ));
+        }
     }
     Ok(server)
 }

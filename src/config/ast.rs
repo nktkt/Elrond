@@ -74,6 +74,11 @@ pub struct Server {
     pub server_name: Option<String>,
     pub root: Option<String>,
     pub locations: Vec<Location>,
+    /// `true` if `listen ... ssl;` was specified. Requires `ssl_certificate`
+    /// and `ssl_certificate_key`.
+    pub tls: bool,
+    pub ssl_certificate: Option<String>,
+    pub ssl_certificate_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

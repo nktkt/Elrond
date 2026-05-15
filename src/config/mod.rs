@@ -301,12 +301,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_tls_listen() {
+    fn tls_listen_requires_cert_paths() {
+        // listen ... ssl without ssl_certificate / ssl_certificate_key
         let err = parse_str(
             "http { server { listen 443 ssl; location / { return 200; } } }",
         )
         .unwrap_err();
-        assert!(err.to_lowercase().contains("tls"), "got: {err}");
+        assert!(err.contains("ssl_certificate"), "got: {err}");
+    }
+
+    #[test]
+    fn tls_listen_accepted_with_paths() {
+        let cfg = parse_str(
+            r#"http { server {
+                listen 443 ssl;
+                ssl_certificate /tmp/cert.pem;
+                ssl_certificate_key /tmp/key.pem;
+                location / { return 200; }
+            } }"#,
+        )
+        .unwrap();
+        let s = &cfg.http.unwrap().servers[0];
+        assert!(s.tls);
+        assert_eq!(s.ssl_certificate.as_deref(), Some("/tmp/cert.pem"));
+        assert_eq!(s.ssl_certificate_key.as_deref(), Some("/tmp/key.pem"));
     }
 
     #[test]

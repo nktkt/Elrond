@@ -17,7 +17,9 @@ pub type SharedState = Arc<ServerState>;
 pub type HeaderList = Arc<Vec<(HeaderName, Template)>>;
 
 pub struct Runtime {
-    pub servers: Vec<(SocketAddr, SharedState)>,
+    /// One entry per `server` block. The optional `rustls::ServerConfig`
+    /// signals that the listener should terminate TLS.
+    pub servers: Vec<(SocketAddr, SharedState, Option<Arc<rustls::ServerConfig>>)>,
 }
 
 pub struct ServerState {
@@ -321,6 +323,23 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         }
         prefix_locs.sort_by(|a, b| b.path.len().cmp(&a.path.len()));
 
+        let tls = if s.tls {
+            let cert = s
+                .ssl_certificate
+                .as_ref()
+                .ok_or("missing ssl_certificate for a TLS server")?;
+            let key = s
+                .ssl_certificate_key
+                .as_ref()
+                .ok_or("missing ssl_certificate_key for a TLS server")?;
+            Some(crate::tls::server_config(
+                std::path::Path::new(cert),
+                std::path::Path::new(key),
+            )?)
+        } else {
+            None
+        };
+
         servers.push((
             addr,
             Arc::new(ServerState {
@@ -328,6 +347,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 exact_locs,
                 prefix_locs,
             }),
+            tls,
         ));
     }
 

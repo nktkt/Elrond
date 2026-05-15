@@ -29,15 +29,17 @@ use crate::{proxy, static_files};
 pub async fn run(
     addr: SocketAddr,
     listener: TcpListener,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
     state_rx: watch::Receiver<Arc<ServerState>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
+    let scheme = if tls_acceptor.is_some() { "https" } else { "http" };
     {
         let s = state_rx.borrow();
         if let Some(name) = &s.server_name {
-            info!("listening on http://{addr} (server_name {name})");
+            info!("listening on {scheme}://{addr} (server_name {name})");
         } else {
-            info!("listening on http://{addr}");
+            info!("listening on {scheme}://{addr}");
         }
     }
 
@@ -55,19 +57,49 @@ pub async fn run(
                 };
 
                 let state = state_rx.borrow().clone();
-                let io = TokioIo::new(stream);
-                let service = service_fn(move |req| {
-                    let state = state.clone();
-                    async move { handle(state, req, peer).await }
-                });
 
-                let conn = http1::Builder::new().serve_connection(io, service);
-                let watched = graceful.watch(conn);
-                tokio::spawn(async move {
-                    if let Err(e) = watched.await {
-                        debug!("connection from {peer} ended: {e}");
+                match tls_acceptor.clone() {
+                    None => {
+                        let io = TokioIo::new(stream);
+                        let service = service_fn(move |req| {
+                            let state = state.clone();
+                            async move { handle(state, req, peer).await }
+                        });
+                        let conn = http1::Builder::new().serve_connection(io, service);
+                        let watched = graceful.watch(conn);
+                        tokio::spawn(async move {
+                            if let Err(e) = watched.await {
+                                debug!("connection from {peer} ended: {e}");
+                            }
+                        });
                     }
-                });
+                    Some(acceptor) => {
+                        // TLS handshake is performed in the spawned task so the
+                        // accept loop is not stalled. In-flight TLS connections
+                        // are not yet tracked by GracefulShutdown — a small
+                        // documented limitation in v0.6.0.
+                        tokio::spawn(async move {
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    let io = TokioIo::new(tls_stream);
+                                    let service = service_fn(move |req| {
+                                        let state = state.clone();
+                                        async move { handle(state, req, peer).await }
+                                    });
+                                    if let Err(e) = http1::Builder::new()
+                                        .serve_connection(io, service)
+                                        .await
+                                    {
+                                        debug!("tls connection from {peer} ended: {e}");
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("tls handshake from {peer} failed: {e}");
+                                }
+                            }
+                        });
+                    }
+                }
             }
             _ = shutdown.changed() => {
                 if *shutdown.borrow() {

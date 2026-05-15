@@ -10,6 +10,7 @@ mod server;
 mod static_files;
 mod supervisor;
 mod template;
+mod tls;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -53,6 +54,7 @@ async fn main() -> ExitCode {
     }
 
     init_tracing();
+    tls::install_crypto_provider();
 
     let cfg = match config::load(&config_path) {
         Ok(cfg) => cfg,

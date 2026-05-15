@@ -2,6 +2,65 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.6.0] - 2026-05-15
+
+**TLS / HTTPS (Phase 6).** 41 unit tests. Pre-alpha.
+
+### Added
+
+- **`listen ... ssl;`** is now honored. `ssl_certificate` and
+  `ssl_certificate_key` are required for any TLS `server` block;
+  configuration load fails fast if either is missing.
+- **PEM loader** (`src/tls.rs`) for certificate chains (`certs`) and
+  private keys (PKCS#8, PKCS#1, SEC1 — anything `rustls-pemfile`
+  understands). Validates that at least one cert was found.
+- **`rustls::ServerConfig` per `server` block** built at config-load time
+  so misconfigured certs are reported at startup, not at the first
+  handshake.
+- **ALPN** advertises `http/1.1` (HTTP/2 over TLS lands in a later release).
+- **TLS-aware logging:** `listening on https://…` for TLS listeners,
+  `listening on http://…` for plain.
+- The `rustls`'s "ring" crypto provider is installed once at process start.
+- Several `ssl_*` directives (`ssl_protocols`, `ssl_ciphers`,
+  `ssl_session_cache`, …) are now accepted by the parser for forward
+  compatibility; they are not yet applied.
+
+### Changed
+
+- `app::Runtime::servers` is now `Vec<(SocketAddr, SharedState, Option<Arc<rustls::ServerConfig>>)>`.
+- `server::run` takes an `Option<tokio_rustls::TlsAcceptor>`. On a TLS
+  listener, each accepted connection is handshake'd in its own task to
+  avoid stalling the accept loop.
+- Supervisor reload preserves TLS state per listener (a config change to
+  certs is logged but does not yet swap the live cert — see deferred).
+
+### Tests
+
+- 41 unit tests (one new test: `tls_listen_accepted_with_paths`; the old
+  `rejects_tls_listen` was replaced with
+  `tls_listen_requires_cert_paths`).
+- **Smoke-tested end-to-end** with a self-signed `localhost` cert:
+  `https://localhost:8443/` → `200`, exact-match `= /healthz` + `add_header`
+  → 200 with `X-Service`, ALPN negotiates `http/1.1`, TLS 1.3 with
+  AES-256-GCM-SHA384, plain HTTP coexists on 8080, plain HTTP to the
+  TLS port fails the handshake (no accidental plaintext).
+
+### Known limitations carried into v0.6.0
+
+- One certificate per `server` block — multi-cert SNI selection is not
+  yet implemented.
+- **TLS connections are not yet enrolled in graceful shutdown** —
+  in-flight TLS conns may be dropped on `SIGINT`/`SIGTERM`. Plain HTTP
+  still drains correctly.
+- **No certificate hot-reload on `SIGHUP`** yet — application config
+  reload works, but a TLS listener keeps its certificate until restart.
+- No OCSP stapling, no client certificate verification, no ACME.
+
+### Still deferred (roadmap)
+
+HTTP/2 (paired with TLS now we have ALPN), HTTP/3, caching, `stream`
+proxying, active health checks, modules / WASM, OpenTelemetry exporter.
+
 ## [0.5.0] - 2026-05-15
 
 Static-serving depth (Phase 3) and proxy retry (Phase 4). **40 unit tests**
@@ -238,6 +297,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.6.0]: https://github.com/nktkt/Elrond/releases/tag/v0.6.0
 [0.5.0]: https://github.com/nktkt/Elrond/releases/tag/v0.5.0
 [0.4.0]: https://github.com/nktkt/Elrond/releases/tag/v0.4.0
 [0.3.0]: https://github.com/nktkt/Elrond/releases/tag/v0.3.0
