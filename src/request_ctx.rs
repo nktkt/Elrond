@@ -17,9 +17,18 @@ pub struct RequestCtx<'a> {
     pub uri: &'a Uri,
     pub headers: &'a HeaderMap,
     pub scheme: &'a str,
+    /// User-defined variables produced by `map` directives. Looked up by
+    /// the variable engine when it sees an `Unknown` reference.
+    pub user_vars: &'a std::collections::HashMap<String, String>,
 }
 
 impl<'a> RequestCtx<'a> {
+    /// Look up a user-defined variable (set by a `map` directive). Returns
+    /// `None` if the name is unknown.
+    pub fn user_var(&self, name: &str) -> Option<&str> {
+        self.user_vars.get(name).map(String::as_str)
+    }
+
     /// Resolve `$host`: the request's `Host` header, or — for HTTP/2 where
     /// `:authority` is not surfaced as a `Host` header — the URI's authority,
     /// or finally the server's `server_name`.

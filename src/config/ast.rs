@@ -38,6 +38,37 @@ pub struct Http {
     pub limit_req_zones: Vec<LimitReqZoneDecl>,
     /// `limit_conn_zone <key> zone=NAME:SIZE;` zone declarations.
     pub limit_conn_zones: Vec<LimitConnZoneDecl>,
+    /// `map $source $output { … }` declarations. Evaluated once per
+    /// request, before the location-level templates run.
+    pub maps: Vec<MapDecl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapDecl {
+    /// Template evaluated against the standard variable set to produce
+    /// the value to look up in `rules`.
+    pub source: Template,
+    /// Name to publish — usable as `$output_name` in other templates.
+    pub output_name: String,
+    /// Patterns in declaration order. First matching literal wins;
+    /// `default` is consulted last.
+    pub rules: Vec<MapRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MapRule {
+    pub pattern: MapPattern,
+    /// Result template — may itself reference variables (excluding maps,
+    /// to avoid infinite recursion).
+    pub value: Template,
+}
+
+#[derive(Debug, Clone)]
+pub enum MapPattern {
+    /// `"alpha"` — match if the rendered source equals this string.
+    Literal(String),
+    /// `default` — fallback when no literal matches.
+    Default,
 }
 
 #[derive(Debug, Clone)]

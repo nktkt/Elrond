@@ -172,7 +172,11 @@ impl VarRef {
                     out.push_str(&v);
                 }
             }
-            VarRef::Unknown(_) => {}
+            VarRef::Unknown(name) => {
+                if let Some(v) = ctx.user_var(name) {
+                    out.push_str(v);
+                }
+            }
         }
     }
 }
@@ -189,6 +193,7 @@ mod tests {
         headers: &'a HeaderMap,
         peer: SocketAddr,
         server_name: Option<&'a str>,
+        user_vars: &'a std::collections::HashMap<String, String>,
     ) -> RequestCtx<'a> {
         RequestCtx {
             peer,
@@ -197,6 +202,7 @@ mod tests {
             uri,
             headers,
             scheme: "http",
+            user_vars,
         }
     }
 
@@ -207,7 +213,8 @@ mod tests {
         let m = Method::GET;
         let u: Uri = "/".parse().unwrap();
         let h = HeaderMap::new();
-        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None);
+        let uv = std::collections::HashMap::new();
+        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None, &uv);
         assert_eq!(t.render(&c), "hello world");
     }
 
@@ -218,7 +225,15 @@ mod tests {
         let u: Uri = "/path?a=1".parse().unwrap();
         let mut h = HeaderMap::new();
         h.insert("host", "example.test".parse().unwrap());
-        let c = ctx(&m, &u, &h, "10.0.0.1:443".parse().unwrap(), Some("srv"));
+        let uv = std::collections::HashMap::new();
+        let c = ctx(
+            &m,
+            &u,
+            &h,
+            "10.0.0.1:443".parse().unwrap(),
+            Some("srv"),
+            &uv,
+        );
         assert_eq!(t.render(&c), "http://example.test/path?a=1");
     }
 
@@ -228,8 +243,28 @@ mod tests {
         let m = Method::GET;
         let u: Uri = "/".parse().unwrap();
         let h = HeaderMap::new();
-        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), Some("fallback"));
+        let uv = std::collections::HashMap::new();
+        let c = ctx(
+            &m,
+            &u,
+            &h,
+            "127.0.0.1:1".parse().unwrap(),
+            Some("fallback"),
+            &uv,
+        );
         assert_eq!(t.render(&c), "fallback");
+    }
+
+    #[test]
+    fn user_var_resolves_through_template() {
+        let t = Template::parse("hello $tier");
+        let m = Method::GET;
+        let u: Uri = "/".parse().unwrap();
+        let h = HeaderMap::new();
+        let mut uv = std::collections::HashMap::new();
+        uv.insert("tier".to_string(), "gold".to_string());
+        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None, &uv);
+        assert_eq!(t.render(&c), "hello gold");
     }
 
     #[test]
@@ -238,7 +273,8 @@ mod tests {
         let m = Method::GET;
         let u: Uri = "/?name=alice&id=2".parse().unwrap();
         let h = HeaderMap::new();
-        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None);
+        let uv = std::collections::HashMap::new();
+        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None, &uv);
         assert_eq!(t.render(&c), "hello alice!");
     }
 
@@ -249,7 +285,8 @@ mod tests {
         let u: Uri = "/".parse().unwrap();
         let mut h = HeaderMap::new();
         h.insert("user-agent", "elrond-test/1".parse().unwrap());
-        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None);
+        let uv = std::collections::HashMap::new();
+        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None, &uv);
         assert_eq!(t.render(&c), "elrond-test/1");
     }
 
@@ -259,7 +296,8 @@ mod tests {
         let m = Method::POST;
         let u: Uri = "/".parse().unwrap();
         let h = HeaderMap::new();
-        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None);
+        let uv = std::collections::HashMap::new();
+        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None, &uv);
         assert_eq!(t.render(&c), "a=POST b= c=$$");
     }
 
@@ -270,7 +308,8 @@ mod tests {
         let u: Uri = "/".parse().unwrap();
         let mut h = HeaderMap::new();
         h.insert("cookie", "a=1; session=abc; b=2".parse().unwrap());
-        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None);
+        let uv = std::collections::HashMap::new();
+        let c = ctx(&m, &u, &h, "127.0.0.1:1".parse().unwrap(), None, &uv);
         assert_eq!(t.render(&c), "abc");
     }
 }

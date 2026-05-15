@@ -59,6 +59,10 @@ fn build_http(dirs: &[Directive]) -> Result<Http, String> {
                 let zone = parse_limit_conn_zone(&d.args, d.line)?;
                 http.limit_conn_zones.push(zone);
             }
+            "map" => {
+                let decl = build_map(&d.args, expect_block(d)?, d.line)?;
+                http.maps.push(decl);
+            }
             "include" => {}
             "error_log" | "sendfile" | "tcp_nopush" | "tcp_nodelay"
             | "keepalive_timeout" | "types_hash_max_size" | "default_type"
@@ -556,6 +560,47 @@ fn build_location(
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,
+    })
+}
+
+/// Build a `map $src $output { … }` declaration.
+fn build_map(
+    args: &[String],
+    block: &[Directive],
+    line: usize,
+) -> Result<MapDecl, String> {
+    if args.len() < 2 {
+        return Err(format!(
+            "line {line}: 'map' requires '<source-template> <output-var> {{ … }}'"
+        ));
+    }
+    let source = Template::parse(&args[0]);
+    let output_name = args[1]
+        .strip_prefix('$')
+        .ok_or_else(|| {
+            format!(
+                "line {line}: 'map' output variable must start with '$' (got '{}')",
+                args[1]
+            )
+        })?
+        .to_string();
+    let mut rules = Vec::with_capacity(block.len());
+    for entry in block {
+        let pattern = if entry.name == "default" {
+            MapPattern::Default
+        } else {
+            MapPattern::Literal(entry.name.clone())
+        };
+        let value_raw = entry.args.first().cloned().unwrap_or_default();
+        rules.push(MapRule {
+            pattern,
+            value: Template::parse(&value_raw),
+        });
+    }
+    Ok(MapDecl {
+        source,
+        output_name,
+        rules,
     })
 }
 

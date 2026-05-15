@@ -42,6 +42,9 @@ pub struct ServerState {
     /// Effective gzip-enabled state for this server.
     pub gzip: bool,
     pub gzip_types: Vec<String>,
+    /// `map` declarations, evaluated once per request before any
+    /// location-level templates run.
+    pub maps: Arc<Vec<crate::config::MapDecl>>,
     exact_locs: Vec<LocationRt>,
     prefix_locs: Vec<LocationRt>,
 }
@@ -524,6 +527,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 scheme,
                 gzip: s.gzip.unwrap_or(false),
                 gzip_types: s.gzip_types.clone(),
+                maps: Arc::new(http.maps.clone()),
                 exact_locs,
                 prefix_locs,
             }),
@@ -639,6 +643,13 @@ mod tests {
         })
     }
 
+    fn empty_user_vars() -> &'static std::collections::HashMap<String, String> {
+        use std::sync::OnceLock;
+        static EMPTY: OnceLock<std::collections::HashMap<String, String>> =
+            OnceLock::new();
+        EMPTY.get_or_init(std::collections::HashMap::new)
+    }
+
     fn mk_ctx<'a>(
         method: &'a Method,
         uri: &'a Uri,
@@ -652,6 +663,7 @@ mod tests {
             uri,
             headers,
             scheme: "http",
+            user_vars: empty_user_vars(),
         }
     }
 

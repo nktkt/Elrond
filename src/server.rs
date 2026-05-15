@@ -156,6 +156,44 @@ async fn handle(
     let uri = req.uri().clone();
     let headers = req.headers().clone();
 
+    // Evaluate `map` declarations in declaration order with an accumulating
+    // user-vars map, so a later map can reference an earlier map's output.
+    // Recursion-by-loop is not supported (each map sees only what was
+    // declared above it), matching Nginx semantics.
+    let mut user_vars: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(state.maps.len());
+    for m in state.maps.iter() {
+        let stage_ctx = RequestCtx {
+            peer,
+            server_name: state.server_name.as_deref(),
+            method: &method,
+            uri: &uri,
+            headers: &headers,
+            scheme: state.scheme,
+            user_vars: &user_vars,
+        };
+        let source_value = m.source.render(&stage_ctx);
+        let mut chosen: Option<&crate::config::MapRule> = None;
+        let mut default_rule: Option<&crate::config::MapRule> = None;
+        for r in &m.rules {
+            match &r.pattern {
+                crate::config::MapPattern::Literal(s) if *s == source_value => {
+                    chosen = Some(r);
+                    break;
+                }
+                crate::config::MapPattern::Default => {
+                    default_rule = default_rule.or(Some(r));
+                }
+                _ => {}
+            }
+        }
+        let value = chosen
+            .or(default_rule)
+            .map(|r| r.value.render(&stage_ctx))
+            .unwrap_or_default();
+        user_vars.insert(m.output_name.clone(), value);
+    }
+
     let ctx = RequestCtx {
         peer,
         server_name: state.server_name.as_deref(),
@@ -163,6 +201,7 @@ async fn handle(
         uri: &uri,
         headers: &headers,
         scheme: state.scheme,
+        user_vars: &user_vars,
     };
 
     let path = uri.path().to_string();

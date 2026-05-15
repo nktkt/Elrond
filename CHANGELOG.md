@@ -2,6 +2,69 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.21.0] - 2026-05-15
+
+**`map` directive (literal-pattern only).** 80 unit tests. Pre-alpha.
+
+`map` is the most-requested missing variable derivation primitive. v0.21.0
+ships a literal-only implementation with **chained evaluation**: a later
+`map` can reference an earlier `map`'s output, which is by far the most
+common use.
+
+### Added
+
+- **`map $source $output { … }`** at http level.
+  - Patterns are literal strings: `"alpha" "value-1";`.
+  - `default "fallback";` matches when nothing else does.
+  - Result values are themselves templates — `"server-$tier"` works.
+- **`$output`** is usable in every other template (`return`,
+  `proxy_set_header`, `add_header`, `proxy_cache_key`, …).
+- **Chained evaluation in declaration order.** A `map` can reference
+  another `map` defined above it, so layered policy lookups (auth
+  status → cache segment → backend selection) work naturally.
+- `Unknown` variable references now consult the user-vars table; any
+  template variable that isn't a built-in tries the map output first
+  before rendering empty.
+
+### Tests
+
+- 80 unit tests (was 79). 1 new in `template::tests`:
+  `user_var_resolves_through_template` — sets `$tier=gold` in the
+  user-vars HashMap, renders `"hello $tier"`, asserts `"hello gold"`.
+
+### Verified end-to-end
+
+```nginx
+map $arg_plan $tier {
+    "gold"    "premium-tier";
+    "silver"  "standard-tier";
+    default   "free-tier";
+}
+
+map $tier $cache_segment {
+    "premium-tier"  "premium";
+    default         "shared";
+}
+```
+
+```
+GET /?plan=gold          → plan=gold     tier=premium-tier  segment=premium
+GET /?plan=silver        → plan=silver   tier=standard-tier segment=shared
+GET /?plan=missing-tier  → plan=missing  tier=free-tier     segment=shared
+GET /                    → plan=         tier=free-tier     segment=shared
+```
+
+The chained lookup picked `segment=premium` only for `tier=premium-tier`,
+confirming the later `map` could read the earlier `map`'s output.
+
+### Known follow-ups
+
+- No regex patterns (`~` / `~*`). Adding regex requires a regex crate
+  decision and is its own release.
+- No `volatile` / `hostnames` modifiers.
+- Maps cannot recursively reference themselves; each map sees only
+  outputs declared *above* it (Nginx-compatible behavior).
+
 ## [0.20.0] - 2026-05-15
 
 **`allow` / `deny` (IP access control).** 79 unit tests. Pre-alpha.
@@ -952,6 +1015,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.21.0]: https://github.com/nktkt/Elrond/releases/tag/v0.21.0
 [0.20.0]: https://github.com/nktkt/Elrond/releases/tag/v0.20.0
 [0.19.0]: https://github.com/nktkt/Elrond/releases/tag/v0.19.0
 [0.18.0]: https://github.com/nktkt/Elrond/releases/tag/v0.18.0
