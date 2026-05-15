@@ -2,6 +2,51 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.15.0] - 2026-05-15
+
+**TLS certificate hot-reload via `SIGHUP`.** 60 unit tests. Pre-alpha.
+
+Closes the v0.6 caveat that TLS listeners kept their initial certificate
+across reloads.
+
+### Added
+
+- **Cert hot-reload.** A `SIGHUP` re-reads the certificate and private
+  key from disk (using the paths the config currently names), rebuilds
+  a `rustls::ServerConfig` and `TlsAcceptor`, and pushes the new
+  acceptor into the listener via a `watch::channel`. Connections that
+  start after the reload use the new cert; in-flight TLS connections
+  finish their handshake with whatever acceptor they captured at the
+  point of `accept()`.
+- **`TlsHandles`** — a small struct carrying `Arc<ServerConfig>` +
+  `cert_path` + `key_path`. The supervisor uses the paths to re-read on
+  reload; the `ServerConfig` is the initial live acceptor.
+- A `watch::Sender<Arc<TlsAcceptor>>` lives in each TLS `HttpListener`;
+  `server::run` watches the receiver and snapshots the latest acceptor
+  per `accept()`.
+
+### Verified end-to-end
+
+Two self-signed certs (CN=`server-v1.local`, CN=`server-v2.local`)
+sharing the same on-disk paths via `cp`. `openssl s_client` reported:
+- **Before reload:** `subject=CN=server-v1.local`
+- **After `cp v2.* live.*; kill -HUP`:** `subject=CN=server-v2.local`
+- Body still served cleanly.
+- Log: `reload: TLS listener 0.0.0.0:8443 re-loaded cert from
+  /tmp/certs/live.crt / /tmp/certs/live.key`.
+
+### Known follow-ups
+
+- **Toggling TLS on/off in place** (adding `ssl` to a previously-plain
+  listener, or vice versa) is logged but not yet handled. A restart is
+  required for that change. The accept loop's plain vs. TLS branch is
+  selected at spawn time.
+- **SNI multi-cert.** One certificate per `server` block still — a
+  resolver-based approach for SNI-routed multi-cert is the next
+  closure of the TLS roadmap.
+- **`ssl_protocols` / `ssl_ciphers` tuning** is still tolerated but
+  unapplied.
+
 ## [0.14.0] - 2026-05-15
 
 **`autoindex` directory listings.** 60 unit tests. Pre-alpha.
@@ -657,6 +702,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.15.0]: https://github.com/nktkt/Elrond/releases/tag/v0.15.0
 [0.14.0]: https://github.com/nktkt/Elrond/releases/tag/v0.14.0
 [0.13.0]: https://github.com/nktkt/Elrond/releases/tag/v0.13.0
 [0.12.0]: https://github.com/nktkt/Elrond/releases/tag/v0.12.0

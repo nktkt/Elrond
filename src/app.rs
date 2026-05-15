@@ -17,11 +17,22 @@ pub type SharedState = Arc<ServerState>;
 pub type HeaderList = Arc<Vec<(HeaderName, Template)>>;
 
 pub struct Runtime {
-    /// One entry per HTTP `server` block. The optional `rustls::ServerConfig`
-    /// signals that the listener should terminate TLS.
-    pub servers: Vec<(SocketAddr, SharedState, Option<Arc<rustls::ServerConfig>>)>,
+    /// One entry per HTTP `server` block. The optional [`TlsHandles`]
+    /// carries both the prebuilt `ServerConfig` and the on-disk paths the
+    /// supervisor needs to re-read on `SIGHUP`.
+    pub servers: Vec<(SocketAddr, SharedState, Option<TlsHandles>)>,
     /// One entry per `stream` `server` block — TCP proxying.
     pub stream_servers: Vec<(SocketAddr, Arc<Balancer>)>,
+}
+
+/// Everything the supervisor needs to know about a TLS listener:
+/// the live `ServerConfig` plus the certificate / key paths so it can
+/// rebuild on reload.
+#[derive(Clone)]
+pub struct TlsHandles {
+    pub server_config: Arc<rustls::ServerConfig>,
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
 }
 
 pub struct ServerState {
@@ -408,10 +419,15 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 .ssl_certificate_key
                 .as_ref()
                 .ok_or("missing ssl_certificate_key for a TLS server")?;
-            Some(crate::tls::server_config(
-                std::path::Path::new(cert),
-                std::path::Path::new(key),
-            )?)
+            let cert_path = PathBuf::from(cert);
+            let key_path = PathBuf::from(key);
+            let server_config =
+                crate::tls::server_config(&cert_path, &key_path)?;
+            Some(TlsHandles {
+                server_config,
+                cert_path,
+                key_path,
+            })
         } else {
             None
         };

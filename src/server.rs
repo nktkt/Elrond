@@ -32,11 +32,11 @@ use crate::{proxy, static_files};
 pub async fn run(
     addr: SocketAddr,
     listener: TcpListener,
-    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    tls_rx: Option<watch::Receiver<Arc<tokio_rustls::TlsAcceptor>>>,
     state_rx: watch::Receiver<Arc<ServerState>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
-    let scheme = if tls_acceptor.is_some() { "https" } else { "http" };
+    let scheme = if tls_rx.is_some() { "https" } else { "http" };
     {
         let s = state_rx.borrow();
         if let Some(name) = &s.server_name {
@@ -61,8 +61,14 @@ pub async fn run(
 
                 metrics::record_conn_accepted();
                 let state = state_rx.borrow().clone();
+                // Per-accept snapshot of the current TLS acceptor (if any).
+                // Supports cert hot-reload: a `SIGHUP` that pushes a new
+                // acceptor into `tls_rx` reaches subsequent connections
+                // without disturbing in-flight handshakes.
+                let tls_acceptor_for_this_conn =
+                    tls_rx.as_ref().map(|rx| (**rx.borrow()).clone());
 
-                match tls_acceptor.clone() {
+                match tls_acceptor_for_this_conn {
                     None => {
                         let io = TokioIo::new(stream);
                         let service = service_fn(move |req| {
