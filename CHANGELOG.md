@@ -2,6 +2,51 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.10.0] - 2026-05-15
+
+**On-the-fly gzip compression.** 50 unit tests. Pre-alpha.
+
+### Added
+
+- **`gzip on|off;`** at server and location level (with location overriding
+  server).
+- **`gzip_types <mime> …;`** at server level — adds MIME types to the
+  built-in eligibility list.
+- Built-in defaults (compressed when client offers `gzip`): `text/html`,
+  `text/css`, `text/plain`, `text/javascript`, `text/xml`,
+  `application/javascript`, `application/x-javascript`,
+  `application/json`, `application/xml`, `application/atom+xml`,
+  `application/rss+xml`, `image/svg+xml`, `font/woff`, `font/woff2`.
+- Response gets `Content-Encoding: gzip`, an accurate compressed
+  `Content-Length`, and a `Vary: Accept-Encoding` (appended cleanly to
+  any existing `Vary`).
+- **Skipped automatically** when: the client didn't offer `gzip`, the
+  response already has a `Content-Encoding`, the response status is not
+  one of `200/203/206/301/302`, the content type isn't eligible, or the
+  body is shorter than 20 bytes (matches Nginx's `gzip_min_length`
+  default).
+- Tolerated, not yet applied: `gzip_disable`, `gzip_min_length`,
+  `gzip_comp_level`, `gzip_proxied`, `gzip_vary`, `gzip_buffers`.
+
+### Tests
+
+- 50 unit tests (was 46). Added: `accept_detection`, `content_type_check`,
+  `small_body_is_not_compressed`, `eligible_body_is_compressed`.
+- **Smoke-tested on the wire:** a 225-byte plain payload compressed to
+  75 bytes (3× reduction) when the client offered `Accept-Encoding: gzip`;
+  `Vary: Accept-Encoding` was set; a 5-byte body stayed uncompressed;
+  `curl --compressed` decoded the original content cleanly.
+
+### Known limitations
+
+- **Proxied responses are not yet gzip-eligible** — they stream, and
+  v0.10.0 does not buffer to compress. Static and `return` responses
+  cover most cases; proxied compression lands later.
+- No Brotli yet (`br`).
+- `gzip_min_length` is hard-coded at 20 bytes for v0.10.0 (matches
+  Nginx default).
+- Compression level is `flate2`'s default.
+
 ## [0.9.0] - 2026-05-15
 
 **TCP `stream` proxy (Phase 10).** 46 unit tests. Pre-alpha.
@@ -441,6 +486,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.10.0]: https://github.com/nktkt/Elrond/releases/tag/v0.10.0
 [0.9.0]: https://github.com/nktkt/Elrond/releases/tag/v0.9.0
 [0.8.0]: https://github.com/nktkt/Elrond/releases/tag/v0.8.0
 [0.7.0]: https://github.com/nktkt/Elrond/releases/tag/v0.7.0

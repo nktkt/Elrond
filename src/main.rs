@@ -3,6 +3,7 @@
 mod app;
 mod body;
 mod config;
+mod gzip;
 mod http_date;
 mod metrics;
 mod proxy;

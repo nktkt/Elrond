@@ -93,6 +93,11 @@ pub struct Server {
     pub tls: bool,
     pub ssl_certificate: Option<String>,
     pub ssl_certificate_key: Option<String>,
+    /// `gzip on|off;` at server level. Cascades into locations that don't
+    /// override it. `None` is treated as off.
+    pub gzip: Option<bool>,
+    /// Additional MIME types eligible for on-the-fly gzip.
+    pub gzip_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +116,9 @@ pub struct Location {
     /// `expires <duration>;` — applied to outgoing responses as both
     /// `Cache-Control: max-age=N` and `Expires: <date>`.
     pub expires: Option<Duration>,
+    /// Per-location `gzip on|off;` override. `None` falls back to the
+    /// server-level setting.
+    pub gzip: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

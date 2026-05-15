@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.9.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.10.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.9.0
+### What works in v0.10.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -42,6 +42,9 @@ change. See the [changelog](CHANGELOG.md) for what landed.
   proxy attempts/failures, TLS handshakes, active connections, uptime, build info, stream stats
 - **TCP `stream` proxy** — top-level `stream { upstream … server { listen X; proxy_pass Y; } }`,
   reusing the same balancer / passive-health / `ip_hash` / `least_conn` machinery as HTTP
+- **On-the-fly gzip** — `gzip on;` + `gzip_types`; correct `Vary: Accept-Encoding`; respects
+  client `Accept-Encoding`; static and `return` responses (proxied bodies stream and are not yet
+  compressed)
 
 **Not yet:** TLS/HTTP2/HTTP3, config hot-reload, caching, `stream` proxying, health checks.
 `listen ... ssl` is rejected rather than silently downgraded. Full list in the changelog.

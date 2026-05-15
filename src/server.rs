@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::app::{ActionRt, LocationRt, ServerState};
 use crate::body::{full, text, ElrondBody};
+use crate::gzip;
 use crate::metrics;
 use crate::request_ctx::RequestCtx;
 use crate::template::Template;
@@ -200,11 +201,28 @@ async fn handle(
             None => (text(404, "404 Not Found\n"), None),
         };
 
+    let mut gzip_eligible = false;
     if let Some(loc) = matched {
         apply_add_headers(response.headers_mut(), &loc.add_headers, &ctx);
         if let Some(d) = loc.expires {
             apply_expires(response.headers_mut(), d);
         }
+        // Proxy responses stream — only static/return bodies are gzip-eligible
+        // in v0.10.0. Detection is by the action variant we just served.
+        gzip_eligible = matches!(
+            &loc.action,
+            ActionRt::Return { .. } | ActionRt::Static { .. } | ActionRt::Metrics
+        ) && loc.gzip.unwrap_or(state.gzip);
+    }
+
+    if gzip_eligible {
+        response = gzip::maybe_compress(
+            response,
+            &headers,
+            true,
+            &state.gzip_types,
+        )
+        .await;
     }
 
     let status = response.status().as_u16();

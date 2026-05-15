@@ -249,6 +249,18 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
             | "ssl_dhparam" | "ssl_ecdh_curve" | "ssl_stapling" => {
                 /* Accepted for forward compatibility; not yet applied. */
             }
+            "gzip" => {
+                server.gzip = Some(parse_on_off(d.args.first().map(String::as_str), d.line)?);
+            }
+            "gzip_types" => {
+                for a in &d.args {
+                    server.gzip_types.push(a.to_lowercase());
+                }
+            }
+            "gzip_disable" | "gzip_min_length" | "gzip_comp_level"
+            | "gzip_proxied" | "gzip_vary" | "gzip_buffers" => {
+                /* Tolerated; not yet applied. */
+            }
             "root" => { /* handled in first pass */ }
             "location" => {
                 if d.args.is_empty() {
@@ -330,6 +342,7 @@ fn build_location(
     let mut set_headers = Vec::new();
     let mut add_headers = Vec::new();
     let mut expires: Option<std::time::Duration> = None;
+    let mut gzip: Option<bool> = None;
 
     for d in dirs {
         let candidate = match d.name.as_str() {
@@ -367,6 +380,10 @@ fn build_location(
                         d.line
                     )
                 })?);
+                None
+            }
+            "gzip" => {
+                gzip = Some(parse_on_off(d.args.first().map(String::as_str), d.line)?);
                 None
             }
             "include" => None,
@@ -413,7 +430,17 @@ fn build_location(
         set_headers,
         add_headers,
         expires,
+        gzip,
     })
+}
+
+fn parse_on_off(s: Option<&str>, line: usize) -> Result<bool, String> {
+    match s {
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(other) => Err(format!("line {line}: expected 'on' or 'off', got '{other}'")),
+        None => Err(format!("line {line}: 'gzip' requires 'on' or 'off'")),
+    }
 }
 
 fn parse_listen(s: &str, line: usize) -> Result<SocketAddr, String> {

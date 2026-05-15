@@ -26,6 +26,13 @@ pub struct Runtime {
 
 pub struct ServerState {
     pub server_name: Option<String>,
+    /// Effective gzip-enabled state for this server (after merging server +
+    /// http defaults). Locations may further override per-location.
+    pub gzip: bool,
+    /// MIME types eligible for on-the-fly gzip, in addition to the built-in
+    /// defaults (`text/*`, `application/json`, `application/javascript`,
+    /// `application/xml`, `image/svg+xml`, `font/woff(2)?`).
+    pub gzip_types: Vec<String>,
     exact_locs: Vec<LocationRt>,
     prefix_locs: Vec<LocationRt>,
 }
@@ -52,6 +59,8 @@ pub struct LocationRt {
     pub add_headers: HeaderList,
     /// `expires` value, applied to every response from this location.
     pub expires: Option<Duration>,
+    /// Per-location gzip override. `None` -> use the server-level default.
+    pub gzip: Option<bool>,
 }
 
 pub enum ActionRt {
@@ -331,6 +340,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 action,
                 add_headers: Arc::new(compile_headers(&loc.add_headers)?),
                 expires: loc.expires,
+                gzip: loc.gzip,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);
@@ -361,6 +371,8 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             addr,
             Arc::new(ServerState {
                 server_name: s.server_name.clone(),
+                gzip: s.gzip.unwrap_or(false),
+                gzip_types: s.gzip_types.clone(),
                 exact_locs,
                 prefix_locs,
             }),
