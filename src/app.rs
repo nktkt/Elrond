@@ -26,12 +26,10 @@ pub struct Runtime {
 
 pub struct ServerState {
     pub server_name: Option<String>,
-    /// Effective gzip-enabled state for this server (after merging server +
-    /// http defaults). Locations may further override per-location.
+    /// `"http"` or `"https"` — used by the variable engine for `$scheme`.
+    pub scheme: &'static str,
+    /// Effective gzip-enabled state for this server.
     pub gzip: bool,
-    /// MIME types eligible for on-the-fly gzip, in addition to the built-in
-    /// defaults (`text/*`, `application/json`, `application/javascript`,
-    /// `application/xml`, `image/svg+xml`, `font/woff(2)?`).
     pub gzip_types: Vec<String>,
     exact_locs: Vec<LocationRt>,
     prefix_locs: Vec<LocationRt>,
@@ -377,10 +375,15 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 }
                 Action::Metrics => ActionRt::Metrics,
             };
+            // Cascade: server-level `add_header` directives are applied
+            // first, then location-level. Last write wins, so a location-
+            // level entry overrides a server-level one with the same name.
+            let mut merged_headers = s.add_headers.clone();
+            merged_headers.extend(loc.add_headers.iter().cloned());
             let location_rt = LocationRt {
                 path: loc.path.clone(),
                 action,
-                add_headers: Arc::new(compile_headers(&loc.add_headers)?),
+                add_headers: Arc::new(compile_headers(&merged_headers)?),
                 expires: loc.expires,
                 gzip: loc.gzip,
             };
@@ -409,10 +412,12 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             None
         };
 
+        let scheme = if s.tls { "https" } else { "http" };
         servers.push((
             addr,
             Arc::new(ServerState {
                 server_name: s.server_name.clone(),
+                scheme,
                 gzip: s.gzip.unwrap_or(false),
                 gzip_types: s.gzip_types.clone(),
                 exact_locs,

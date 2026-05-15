@@ -182,6 +182,22 @@ mod tests {
     }
 
     #[test]
+    fn server_level_add_header_collected() {
+        let cfg = parse_str(
+            r#"http { server { listen 8080;
+                  add_header Strict-Transport-Security "max-age=31536000";
+                  add_header X-Frame-Options "DENY";
+                  location / { return 200 "ok"; }
+               } }"#,
+        )
+        .unwrap();
+        let s = &cfg.http.unwrap().servers[0];
+        assert_eq!(s.add_headers.len(), 2);
+        assert_eq!(s.add_headers[0].0, "Strict-Transport-Security");
+        assert_eq!(s.add_headers[1].0, "X-Frame-Options");
+    }
+
+    #[test]
     fn add_header_collected() {
         let cfg = parse_str(
             r#"http { server { listen 8080;

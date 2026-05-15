@@ -106,6 +106,9 @@ pub struct Server {
     pub gzip: Option<bool>,
     /// Additional MIME types eligible for on-the-fly gzip.
     pub gzip_types: Vec<String>,
+    /// Server-level `add_header` directives. Cascade into every location;
+    /// location-level `add_header` is applied last and wins on conflicts.
+    pub add_headers: Vec<(String, Template)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

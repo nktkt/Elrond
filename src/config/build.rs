@@ -261,6 +261,11 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
                     server.gzip_types.push(a.to_lowercase());
                 }
             }
+            "add_header" => {
+                let name = arg1(d)?;
+                let value = d.args.get(1).cloned().unwrap_or_default();
+                server.add_headers.push((name, Template::parse(&value)));
+            }
             "gzip_disable" | "gzip_min_length" | "gzip_comp_level"
             | "gzip_proxied" | "gzip_vary" | "gzip_buffers" => {
                 /* Tolerated; not yet applied. */
@@ -292,7 +297,7 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
             }
             "include" => {}
             "access_log" | "error_log" | "index" | "client_max_body_size"
-            | "add_header" | "error_page" => {}
+            | "error_page" => {}
             other => {
                 return Err(format!(
                     "line {}: unknown directive '{other}' in server context",

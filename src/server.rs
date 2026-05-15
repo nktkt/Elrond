@@ -156,7 +156,7 @@ async fn handle(
         method: &method,
         uri: &uri,
         headers: &headers,
-        scheme: "http",
+        scheme: state.scheme,
     };
 
     let path = uri.path().to_string();

@@ -20,14 +20,17 @@ pub struct RequestCtx<'a> {
 }
 
 impl<'a> RequestCtx<'a> {
-    /// Resolve `$host`: the request's `Host` header, or the server's
-    /// `server_name` if absent.
+    /// Resolve `$host`: the request's `Host` header, or — for HTTP/2 where
+    /// `:authority` is not surfaced as a `Host` header — the URI's authority,
+    /// or finally the server's `server_name`.
     pub fn host(&self) -> String {
         if let Some(v) = self.headers.get("host").and_then(|v| v.to_str().ok()) {
-            v.to_string()
-        } else {
-            self.server_name.unwrap_or("").to_string()
+            return v.to_string();
         }
+        if let Some(authority) = self.uri.authority() {
+            return authority.as_str().to_string();
+        }
+        self.server_name.unwrap_or("").to_string()
     }
 
     /// `$request_uri`: path plus query, exactly as received.

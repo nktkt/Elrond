@@ -2,6 +2,40 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.13.0] - 2026-05-15
+
+**Polish: `$scheme` honors TLS, server-level `add_header` cascade, `$host`
+on HTTP/2.** 60 unit tests. Pre-alpha.
+
+### Added
+
+- **`$scheme`** now reflects the listener: `https` on TLS listeners,
+  `http` on plain ones. Previously hard-coded to `http`. The new value
+  flows through every template (`return` bodies, `proxy_set_header`,
+  `add_header`, `proxy_cache_key`, `metrics`).
+- **Server-level `add_header`** is now applied to every location in that
+  server, in declaration order. Location-level `add_header` is applied
+  last, so a location-level entry with the same name wins on conflict.
+  This is the standard way to set `Strict-Transport-Security`,
+  `X-Frame-Options`, `X-Content-Type-Options`, etc. once per server.
+
+### Fixed
+
+- **`$host` on HTTP/2.** hyper exposes the HTTP/2 `:authority` pseudo-
+  header via `uri().authority()` rather than as a `Host` header.
+  `RequestCtx::host()` now falls back to the URI authority when no
+  `Host` header is present, so `$host` is non-empty for h2 requests.
+
+### Tests
+
+- 60 unit tests (was 59). Added `server_level_add_header_collected`.
+- **Smoke-tested:** `$scheme` returned `http` over plain and `https`
+  over TLS; server-level `add_header X-Service "elrond"` reached the
+  response on both HTTP/2 and HTTP/1.1 listeners; a location-level
+  `add_header X-Service "cors-specific"` overrode the server-level
+  value; HTTP/2 `$host` rendered the full `localhost:8443` authority
+  rather than empty.
+
 ## [0.12.0] - 2026-05-15
 
 **Documentation deliverable (cross-cutting docs track).** No code
@@ -590,6 +624,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.13.0]: https://github.com/nktkt/Elrond/releases/tag/v0.13.0
 [0.12.0]: https://github.com/nktkt/Elrond/releases/tag/v0.12.0
 [0.11.0]: https://github.com/nktkt/Elrond/releases/tag/v0.11.0
 [0.10.0]: https://github.com/nktkt/Elrond/releases/tag/v0.10.0
