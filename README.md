@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.2.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.3.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.2.0
+### What works in v0.3.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -27,7 +27,9 @@ change. See the [changelog](CHANGELOG.md) for what landed.
   protection, server-level `root` cascade
 - Reverse proxy (`proxy_pass`) to a direct address or a named `upstream`, with streaming bodies
 - `proxy_set_header` and `add_header` with full variable rendering
-- Weighted round-robin load balancing; `X-Real-IP` / `X-Forwarded-For` injection
+- Load balancing: **weighted round-robin, `least_conn`, `ip_hash`**, with passive health
+  (`max_fails` / `fail_timeout`), `backup`, and `down` peers
+- `X-Real-IP` / `X-Forwarded-For` injection
 - Graceful shutdown on Ctrl-C (stops accepting, drains in-flight requests)
 
 **Not yet:** TLS/HTTP2/HTTP3, config hot-reload, caching, `stream` proxying, health checks.

@@ -68,6 +68,7 @@ fn build_upstream(
     line: usize,
 ) -> Result<Upstream, String> {
     let mut servers = Vec::new();
+    let mut method = LbMethod::RoundRobin;
 
     for d in dirs {
         match d.name.as_str() {
@@ -75,17 +76,39 @@ fn build_upstream(
                 let addr = d.args.first().cloned().ok_or_else(|| {
                     format!("line {}: 'server' requires an address", d.line)
                 })?;
-                let mut weight = 1u32;
+                let mut s = UpstreamServer {
+                    addr,
+                    ..UpstreamServer::default()
+                };
                 for a in d.args.iter().skip(1) {
                     if let Some(w) = a.strip_prefix("weight=") {
-                        weight = w.parse().map_err(|_| {
+                        s.weight = w.parse().map_err(|_| {
                             format!("line {}: invalid weight '{w}'", d.line)
                         })?;
+                    } else if let Some(n) = a.strip_prefix("max_fails=") {
+                        s.max_fails = n.parse().map_err(|_| {
+                            format!("line {}: invalid max_fails '{n}'", d.line)
+                        })?;
+                    } else if let Some(t) = a.strip_prefix("fail_timeout=") {
+                        s.fail_timeout = parse_duration(t).ok_or_else(|| {
+                            format!(
+                                "line {}: invalid fail_timeout '{t}' (expected e.g. '10s', '500ms', '1m')",
+                                d.line
+                            )
+                        })?;
+                    } else if a == "backup" {
+                        s.backup = true;
+                    } else if a == "down" {
+                        s.down = true;
                     }
+                    // unknown flags (e.g. slow_start, drain) are silently
+                    // accepted for forward compatibility.
                 }
-                servers.push(UpstreamServer { addr, weight });
+                servers.push(s);
             }
-            "least_conn" | "ip_hash" | "hash" | "keepalive" | "zone" => {}
+            "least_conn" => method = LbMethod::LeastConn,
+            "ip_hash" => method = LbMethod::IpHash,
+            "hash" | "keepalive" | "zone" => { /* accepted; not yet used */ }
             other => {
                 return Err(format!(
                     "line {}: unknown directive '{other}' in upstream context",
@@ -94,10 +117,37 @@ fn build_upstream(
             }
         }
     }
+
     if servers.is_empty() {
         return Err(format!("line {line}: upstream '{name}' has no servers"));
     }
-    Ok(Upstream { name, servers })
+    Ok(Upstream {
+        name,
+        method,
+        servers,
+    })
+}
+
+/// Parse Nginx-style time values: `10s`, `500ms`, `1m`, `2h`, `1d`, or a bare
+/// integer (interpreted as seconds).
+fn parse_duration(s: &str) -> Option<std::time::Duration> {
+    use std::time::Duration;
+    let s = s.trim();
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(Duration::from_secs(n));
+    }
+    let (num, unit) = s
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| s.split_at(i))?;
+    let n: u64 = num.parse().ok()?;
+    match unit {
+        "ms" => Some(Duration::from_millis(n)),
+        "s" => Some(Duration::from_secs(n)),
+        "m" => Some(Duration::from_secs(n * 60)),
+        "h" => Some(Duration::from_secs(n * 60 * 60)),
+        "d" => Some(Duration::from_secs(n * 60 * 60 * 24)),
+        _ => None,
+    }
 }
 
 fn build_server(dirs: &[Directive]) -> Result<Server, String> {

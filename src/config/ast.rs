@@ -1,6 +1,7 @@
 //! Typed configuration model produced by [`crate::config::build`].
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::template::Template;
 
@@ -22,29 +23,62 @@ pub struct Http {
 #[derive(Debug)]
 pub struct Upstream {
     pub name: String,
+    pub method: LbMethod,
     pub servers: Vec<UpstreamServer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LbMethod {
+    /// Weighted round-robin. The default.
+    RoundRobin,
+    /// Send each request to the peer with the fewest in-flight requests,
+    /// adjusted by weight.
+    LeastConn,
+    /// Hash the client IP; requests from one client stick to one peer.
+    IpHash,
+}
+
+impl Default for LbMethod {
+    fn default() -> Self {
+        LbMethod::RoundRobin
+    }
 }
 
 #[derive(Debug)]
 pub struct UpstreamServer {
     pub addr: String,
     pub weight: u32,
+    pub max_fails: u32,
+    pub fail_timeout: Duration,
+    pub backup: bool,
+    pub down: bool,
+}
+
+impl Default for UpstreamServer {
+    fn default() -> Self {
+        UpstreamServer {
+            addr: String::new(),
+            weight: 1,
+            // Nginx defaults: max_fails=1, fail_timeout=10s.
+            max_fails: 1,
+            fail_timeout: Duration::from_secs(10),
+            backup: false,
+            down: false,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct Server {
     pub listen: Option<SocketAddr>,
     pub server_name: Option<String>,
-    /// Server-level `root`. Cascades into locations with no content directive.
     pub root: Option<String>,
     pub locations: Vec<Location>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocationKind {
-    /// `location = /path` — exact equality, highest priority.
     Exact,
-    /// `location /path` — longest-prefix-wins.
     Prefix,
 }
 
@@ -53,9 +87,7 @@ pub struct Location {
     pub kind: LocationKind,
     pub path: String,
     pub action: Action,
-    /// Headers to set on the upstream request (`proxy_set_header`).
     pub set_headers: Vec<(String, Template)>,
-    /// Headers to set on the outgoing response (`add_header`).
     pub add_headers: Vec<(String, Template)>,
 }
 

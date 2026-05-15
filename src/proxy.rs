@@ -1,5 +1,5 @@
-//! Reverse proxy: forward a request to a balancer-selected upstream and
-//! stream the response back.
+//! Reverse proxy: pick a peer via the balancer, forward the request, and
+//! record success/failure on the peer's health state.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,8 +19,7 @@ use crate::app::{Balancer, HeaderList};
 use crate::body::{text, BoxError, ElrondBody};
 use crate::request_ctx::RequestCtx;
 
-/// Hop-by-hop headers, which must not be forwarded across a proxy
-/// (RFC 9110 §7.6.1).
+/// Hop-by-hop headers per RFC 9110 §7.6.1. Never forwarded across a proxy.
 const HOP_BY_HOP: [&str; 8] = [
     "connection",
     "keep-alive",
@@ -48,8 +47,22 @@ pub async fn forward(
     peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
-    let upstream = balancer.pick().to_string();
-    debug!("proxy: '{}' -> {upstream}", balancer.name);
+    let upstream_peer = match balancer.pick(ctx) {
+        Some(p) => p,
+        None => {
+            warn!("proxy: balancer '{}' has no available peers", balancer.name);
+            return text(502, "502 Bad Gateway\n");
+        }
+    };
+    let upstream = upstream_peer.addr.clone();
+    debug!(
+        "proxy: '{}' [{:?}] -> {upstream} (in_flight={})",
+        balancer.name,
+        balancer.method,
+        upstream_peer.in_flight()
+    );
+    let _guard = upstream_peer.enter();
+
     let (mut parts, body) = req.into_parts();
 
     let path_and_query = parts
@@ -61,6 +74,7 @@ pub async fn forward(
         Ok(u) => u,
         Err(e) => {
             warn!("proxy: invalid upstream uri for '{upstream}': {e}");
+            upstream_peer.record_failure();
             return text(502, "502 Bad Gateway\n");
         }
     };
@@ -77,6 +91,15 @@ pub async fn forward(
 
     match client().request(outbound).await {
         Ok(resp) => {
+            // 5xx is a server-side failure signal; treat as peer failure so
+            // passive health tracking reflects reality.
+            let status = resp.status().as_u16();
+            if (500..600).contains(&status) {
+                upstream_peer.record_failure();
+            } else {
+                upstream_peer.record_success();
+            }
+
             let (mut rparts, rbody) = resp.into_parts();
             for h in HOP_BY_HOP {
                 rparts.headers.remove(h);
@@ -86,6 +109,7 @@ pub async fn forward(
         }
         Err(e) => {
             warn!("proxy: upstream '{upstream}' error: {e}");
+            upstream_peer.record_failure();
             text(502, "502 Bad Gateway\n")
         }
     }
@@ -111,8 +135,6 @@ fn add_forwarding_headers(headers: &mut hyper::HeaderMap, peer: SocketAddr) {
     }
 }
 
-/// Render and apply per-location `proxy_set_header` directives. An empty
-/// rendered value removes the header (matching Nginx semantics).
 fn apply_proxy_set_headers(
     headers: &mut hyper::HeaderMap,
     list: &[(HeaderName, crate::template::Template)],

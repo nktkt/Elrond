@@ -2,6 +2,54 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.3.0] - 2026-05-15
+
+Load balancing depth. **31 unit tests** (was 22). Pre-alpha; no TLS yet.
+
+### Added
+
+- **`least_conn`** load-balancing algorithm — picks the peer with the
+  fewest in-flight requests, adjusted by weight.
+- **`ip_hash`** load-balancing algorithm — requests from the same client
+  IP stick to the same peer.
+- **`max_fails=N`** and **`fail_timeout=Ns`** per upstream `server` line:
+  consecutive failures up to `max_fails` mark the peer unavailable for
+  `fail_timeout`. Cleared on the next successful response. (Nginx
+  defaults: 1 / 10s.)
+- **`backup`** flag — peer only chosen when all primaries are unavailable.
+- **`down`** flag — peer never chosen.
+- **Per-peer in-flight counter** with an RAII guard, dropped automatically
+  when the request future is dropped.
+- **Time-unit parser** for `fail_timeout`: bare seconds, plus `ms`, `s`,
+  `m`, `h`, `d` suffixes.
+- 5xx responses now count as upstream failures for passive health
+  tracking; 2xx/3xx/4xx clear the failure counter.
+
+### Changed
+
+- `Balancer` now carries a per-peer health state and an `LbMethod` enum;
+  picking iterates only available peers and falls back to backups.
+- Weighted round-robin is computed per pick from the current set of
+  available peers (so dead peers are skipped without rebuilding the pool).
+- Direct-address `proxy_pass` targets (no `upstream` block) get sensible
+  defaults: weight=1, max_fails=1, fail_timeout=10s.
+
+### Tests
+
+- 9 new unit tests: weighted-RR distribution, `least_conn` prefers idle
+  peer, `ip_hash` stability, failed peer skipped during cooldown,
+  `backup` only used when primaries fail, `down` peer never picked,
+  duration-unit parsing, LB-method parsing, upstream-flag parsing.
+- Runtime smoke-tested end-to-end: kill one of two backends → next
+  requests get `502` once, then all routed to the healthy peer until
+  `fail_timeout` elapses; after restart, both serve traffic again.
+
+### Still not implemented
+
+`proxy_next_upstream` retry, active health checks, generic `hash $var`,
+consistent hashing, TLS, HTTP/2/3, hot reload, caching, `stream` proxy,
+range requests, ETag/expires, regex location. Roadmap unchanged.
+
 ## [0.2.0] - 2026-05-15
 
 Parser depth, variables, and proxy header control. Pre-alpha; still
@@ -87,5 +135,6 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.3.0]: https://github.com/nktkt/Elrond/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nktkt/Elrond/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nktkt/Elrond/releases/tag/v0.1.0

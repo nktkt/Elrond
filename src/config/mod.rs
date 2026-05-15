@@ -198,6 +198,65 @@ mod tests {
     }
 
     #[test]
+    fn upstream_lb_methods_parse() {
+        let cfg = parse_str(
+            r#"http {
+                upstream a { least_conn; server 127.0.0.1:1; }
+                upstream b { ip_hash; server 127.0.0.1:2; }
+                upstream c { server 127.0.0.1:3; }
+                server { listen 8080; location / { proxy_pass http://a; } }
+            }"#,
+        )
+        .unwrap();
+        let h = cfg.http.unwrap();
+        assert_eq!(h.upstreams[0].method, LbMethod::LeastConn);
+        assert_eq!(h.upstreams[1].method, LbMethod::IpHash);
+        assert_eq!(h.upstreams[2].method, LbMethod::RoundRobin);
+    }
+
+    #[test]
+    fn upstream_server_flags_parse() {
+        let cfg = parse_str(
+            r#"http {
+                upstream u {
+                    server 10.0.0.1:80 weight=3 max_fails=5 fail_timeout=30s;
+                    server 10.0.0.2:80 backup;
+                    server 10.0.0.3:80 down;
+                }
+                server { listen 8080; location / { proxy_pass http://u; } }
+            }"#,
+        )
+        .unwrap();
+        let s = &cfg.http.unwrap().upstreams[0].servers;
+        assert_eq!(s[0].weight, 3);
+        assert_eq!(s[0].max_fails, 5);
+        assert_eq!(s[0].fail_timeout, std::time::Duration::from_secs(30));
+        assert!(s[1].backup);
+        assert!(s[2].down);
+    }
+
+    #[test]
+    fn upstream_duration_units() {
+        let cfg = parse_str(
+            r#"http {
+                upstream u {
+                    server 10.0.0.1:80 fail_timeout=500ms;
+                    server 10.0.0.2:80 fail_timeout=2m;
+                    server 10.0.0.3:80 fail_timeout=1h;
+                    server 10.0.0.4:80 fail_timeout=5;
+                }
+                server { listen 8080; location / { proxy_pass http://u; } }
+            }"#,
+        )
+        .unwrap();
+        let s = &cfg.http.unwrap().upstreams[0].servers;
+        assert_eq!(s[0].fail_timeout, std::time::Duration::from_millis(500));
+        assert_eq!(s[1].fail_timeout, std::time::Duration::from_secs(120));
+        assert_eq!(s[2].fail_timeout, std::time::Duration::from_secs(3600));
+        assert_eq!(s[3].fail_timeout, std::time::Duration::from_secs(5));
+    }
+
+    #[test]
     fn alias_action_parses() {
         let cfg = parse_str(
             r#"http { server { listen 8080;
