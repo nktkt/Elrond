@@ -79,6 +79,8 @@ pub struct LocationRt {
     pub limit_req: Option<crate::limit::LimitReqApply>,
     /// `limit_conn` enforcement for this location.
     pub limit_conn: Option<crate::limit::LimitConnApply>,
+    /// `allow` / `deny` rules in declaration order.
+    pub access_rules: Arc<Vec<crate::access::AccessRule>>,
 }
 
 pub enum ActionRt {
@@ -460,6 +462,18 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             } else {
                 None
             };
+            let mut rules: Vec<crate::access::AccessRule> =
+                Vec::with_capacity(loc.access_rules.len());
+            for (is_allow, target) in &loc.access_rules {
+                let t = crate::access::parse_target(target).map_err(|e| {
+                    format!("location '{}': {e}", loc.path)
+                })?;
+                rules.push(if *is_allow {
+                    crate::access::AccessRule::allow(t)
+                } else {
+                    crate::access::AccessRule::deny(t)
+                });
+            }
             let location_rt = LocationRt {
                 path: loc.path.clone(),
                 action,
@@ -470,6 +484,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 auth,
                 limit_req,
                 limit_conn,
+                access_rules: Arc::new(rules),
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);

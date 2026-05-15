@@ -1,5 +1,6 @@
 //! Elrond — a Rust-native Nginx alternative.
 
+mod access;
 mod app;
 mod auth;
 mod body;

@@ -402,6 +402,7 @@ fn build_location(
     let mut auth_basic_user_file: Option<String> = None;
     let mut limit_req: Option<(String, u32)> = None;
     let mut limit_conn: Option<(String, u32)> = None;
+    let mut access_rules: Vec<(bool, String)> = Vec::new();
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -485,6 +486,14 @@ fn build_location(
                 limit_conn = Some(parse_limit_conn(&d.args, d.line)?);
                 None
             }
+            "allow" => {
+                access_rules.push((true, arg1(d)?));
+                None
+            }
+            "deny" => {
+                access_rules.push((false, arg1(d)?));
+                None
+            }
             "limit_req_status" | "limit_conn_status" => None,
             "include" => None,
             "index" | "try_files"
@@ -543,6 +552,7 @@ fn build_location(
         auth_basic_user_file,
         limit_req,
         limit_conn,
+        access_rules,
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,

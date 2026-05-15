@@ -170,6 +170,22 @@ async fn handle(
     let (mut response, matched): (Response<ElrondBody>, Option<&LocationRt>) =
         match state.route(&path) {
             Some(loc) => {
+                // allow / deny — fastest reject, before any work.
+                if !loc.access_rules.is_empty()
+                    && !crate::access::check(&loc.access_rules, peer.ip())
+                {
+                    let denied = text(403, "403 Forbidden\n");
+                    metrics::record_request(403);
+                    info!(
+                        target: "access",
+                        "{} \"{} {}\" 403 (allow/deny)",
+                        peer.ip(),
+                        method,
+                        path
+                    );
+                    return Ok(denied);
+                }
+
                 // limit_req — rate-limit checks come first so we don't
                 // do auth or upstream work just to throw it away on 503.
                 if let Some(apply) = &loc.limit_req {

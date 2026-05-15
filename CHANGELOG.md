@@ -2,6 +2,55 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.20.0] - 2026-05-15
+
+**`allow` / `deny` (IP access control).** 79 unit tests. Pre-alpha.
+
+The natural front for `/metrics`, `/private/`, admin paths, and any
+`auth_basic` realm where you also want a network allow-list.
+
+### Added
+
+- **`allow <target>;`** and **`deny <target>;`** in location context.
+  Targets:
+  - `all`
+  - A single IP: `192.0.2.1`, `::1`
+  - A CIDR block: `10.0.0.0/8`, `2001:db8::/32`, `192.168.1.0/25`
+- **First-match-wins** evaluation in declaration order. An empty rule
+  list allows everyone (Nginx-compatible default).
+- Denied requests get an immediate `403 Forbidden` and an access-log
+  line tagged `(allow/deny)`.
+- **Enforced before every other location-level check** (`limit_req`,
+  `limit_conn`, `auth_basic`, the action), so blocked IPs do zero
+  extra work.
+
+### Tests
+
+- 79 unit tests (was 71). 8 new in `access::tests`:
+  - `all` target.
+  - IPv4 / IPv6 single-address match.
+  - IPv4 CIDR match including a partial-byte (`/25`) boundary.
+  - IPv6 CIDR match.
+  - First-match-wins ordering.
+  - Empty-rules-allow.
+  - Garbage / out-of-range input rejected.
+
+### Verified end-to-end
+
+```nginx
+location = /metrics {
+    allow 127.0.0.0/8;
+    allow ::1;
+    deny all;
+    metrics;
+}
+```
+
+- `curl http://127.0.0.1:8080/metrics` → `200`.
+- `curl http://127.0.0.1:8080/private/` (with `allow 10.0.0.0/8;`,
+  `allow 192.168.0.0/16;`, `deny all;`) → `403`.
+- Access log: `127.0.0.1 "GET /private/" 403 (allow/deny)`.
+
 ## [0.19.0] - 2026-05-15
 
 **Active upstream health checks** (Phase 5 closure). 71 unit tests.
@@ -903,6 +952,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.20.0]: https://github.com/nktkt/Elrond/releases/tag/v0.20.0
 [0.19.0]: https://github.com/nktkt/Elrond/releases/tag/v0.19.0
 [0.18.0]: https://github.com/nktkt/Elrond/releases/tag/v0.18.0
 [0.17.0]: https://github.com/nktkt/Elrond/releases/tag/v0.17.0

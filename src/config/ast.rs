@@ -186,6 +186,9 @@ pub struct Location {
     pub limit_req: Option<(String, u32)>,
     /// `limit_conn zone=NAME N;` — pointer into `Http.limit_conn_zones`.
     pub limit_conn: Option<(String, u32)>,
+    /// `allow X;` / `deny X;` rules in declaration order. First matching
+    /// rule decides; an empty list lets everyone in.
+    pub access_rules: Vec<(bool, String)>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to
