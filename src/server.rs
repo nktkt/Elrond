@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use hyper::body::Incoming;
 use hyper::header::{HeaderName, HeaderValue};
-use hyper::server::conn::http1;
+use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
+use hyper_util::rt::TokioExecutor;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
@@ -75,22 +76,39 @@ pub async fn run(
                     }
                     Some(acceptor) => {
                         // TLS handshake is performed in the spawned task so the
-                        // accept loop is not stalled. In-flight TLS connections
-                        // are not yet tracked by GracefulShutdown — a small
-                        // documented limitation in v0.6.0.
+                        // accept loop is not stalled. After handshake we branch
+                        // on ALPN: h2 → HTTP/2, otherwise → HTTP/1.1.
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    let io = TokioIo::new(tls_stream);
+                                    let alpn = tls_stream
+                                        .get_ref()
+                                        .1
+                                        .alpn_protocol()
+                                        .map(|p| p.to_vec());
                                     let service = service_fn(move |req| {
                                         let state = state.clone();
                                         async move { handle(state, req, peer).await }
                                     });
-                                    if let Err(e) = http1::Builder::new()
+                                    let io = TokioIo::new(tls_stream);
+                                    if alpn.as_deref() == Some(b"h2") {
+                                        if let Err(e) = http2::Builder::new(
+                                            TokioExecutor::new(),
+                                        )
+                                        .serve_connection(io, service)
+                                        .await
+                                        {
+                                            debug!(
+                                                "h2 connection from {peer} ended: {e}"
+                                            );
+                                        }
+                                    } else if let Err(e) = http1::Builder::new()
                                         .serve_connection(io, service)
                                         .await
                                     {
-                                        debug!("tls connection from {peer} ended: {e}");
+                                        debug!(
+                                            "tls/h1 connection from {peer} ended: {e}"
+                                        );
                                     }
                                 }
                                 Err(e) => {

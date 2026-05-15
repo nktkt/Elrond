@@ -49,7 +49,9 @@ pub fn server_config(
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| format!("rustls server config: {e}"))?;
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    // Offer HTTP/2 first, then fall back to HTTP/1.1. Clients that don't
+    // know h2 (e.g. older curl) negotiate http/1.1.
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(cfg))
 }
 

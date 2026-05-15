@@ -10,15 +10,16 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.6.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.7.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.6.0
+### What works in v0.7.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
 - **TLS / HTTPS** via rustls — `listen 443 ssl;` + `ssl_certificate` / `ssl_certificate_key`;
-  TLS 1.2 / 1.3; ALPN advertises `http/1.1`; plain HTTP and HTTPS coexist in one process
+  TLS 1.2 / 1.3; plain HTTP and HTTPS coexist in one process
+- **HTTP/2 over TLS** via ALPN — same TLS listener serves `h2` and `http/1.1` clients
 - Routing: exact-match `location = /path` plus longest-prefix `location /path`
 - `include` directive (relative-path resolution, cycle detection)
 - **Variable engine** — `$host`, `$remote_addr`, `$request_uri`, `$uri`, `$request_method`,

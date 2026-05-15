@@ -1,6 +1,6 @@
 [package]
 name = "elrond"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A Rust-native Nginx alternative — reverse proxy, static serving, and load balancing"
@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "signal", "sync", "time"] }
-hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "server-graceful", "http1", "tokio"] }
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "server-graceful", "http1", "http2", "tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 tracing = "0.1"

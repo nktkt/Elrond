@@ -2,6 +2,43 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.7.0] - 2026-05-15
+
+**HTTP/2 over TLS (Phase 7).** 41 unit tests. Pre-alpha.
+
+### Added
+
+- **HTTP/2 server**, negotiated via ALPN on TLS listeners. Same `service`
+  is reused; per-stream multiplexing and HPACK are provided by hyper +
+  `h2`.
+- ALPN protocol order changed from `[http/1.1]` to `[h2, http/1.1]` —
+  clients that don't know HTTP/2 still negotiate HTTP/1.1 cleanly.
+
+### Changed
+
+- TLS listener accept path now branches on the negotiated ALPN protocol
+  after the handshake and chooses either `http1::Builder` or
+  `http2::Builder` accordingly.
+- `hyper` / `hyper-util` features extended with `http2`.
+
+### Tests
+
+- 41 unit tests (unchanged from v0.6.0).
+- **Smoke-tested end-to-end:** the same TLS listener serves
+  `curl --http2 https://...` as `HTTP/2 200` *and* `curl --http1.1
+  https://...` as `HTTP/1.1 200`. Verbose curl output confirms ALPN
+  selects `h2` when offered, opens a stream, and gets a clean response.
+
+### Known limitations
+
+- HTTP/2 over plaintext (h2c, prior-knowledge) is not implemented.
+- gRPC `grpc_pass` is not yet wired — works through `proxy_pass` to an
+  HTTP backend only.
+- HTTP/2-specific directives (`http2_max_concurrent_streams`,
+  `http2_max_field_size`, …) are not parsed yet.
+- Rapid-reset / continuation-flood mitigations rely on `h2`'s defaults
+  rather than explicit Elrond-level limits.
+
 ## [0.6.0] - 2026-05-15
 
 **TLS / HTTPS (Phase 6).** 41 unit tests. Pre-alpha.
@@ -297,6 +334,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.7.0]: https://github.com/nktkt/Elrond/releases/tag/v0.7.0
 [0.6.0]: https://github.com/nktkt/Elrond/releases/tag/v0.6.0
 [0.5.0]: https://github.com/nktkt/Elrond/releases/tag/v0.5.0
 [0.4.0]: https://github.com/nktkt/Elrond/releases/tag/v0.4.0
