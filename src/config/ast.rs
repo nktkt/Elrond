@@ -89,6 +89,9 @@ pub struct Location {
     pub action: Action,
     pub set_headers: Vec<(String, Template)>,
     pub add_headers: Vec<(String, Template)>,
+    /// `expires <duration>;` — applied to outgoing responses as both
+    /// `Cache-Control: max-age=N` and `Expires: <date>`.
+    pub expires: Option<Duration>,
 }
 
 #[derive(Debug, Clone)]

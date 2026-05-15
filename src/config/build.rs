@@ -130,7 +130,7 @@ fn build_upstream(
 
 /// Parse Nginx-style time values: `10s`, `500ms`, `1m`, `2h`, `1d`, or a bare
 /// integer (interpreted as seconds).
-fn parse_duration(s: &str) -> Option<std::time::Duration> {
+pub(super) fn parse_duration(s: &str) -> Option<std::time::Duration> {
     use std::time::Duration;
     let s = s.trim();
     if let Ok(n) = s.parse::<u64>() {
@@ -246,6 +246,7 @@ fn build_location(
     let mut action: Option<Action> = None;
     let mut set_headers = Vec::new();
     let mut add_headers = Vec::new();
+    let mut expires: Option<std::time::Duration> = None;
 
     for d in dirs {
         let candidate = match d.name.as_str() {
@@ -274,8 +275,18 @@ fn build_location(
                 add_headers.push((name, Template::parse(&value)));
                 None
             }
+            "expires" => {
+                let v = arg1(d)?;
+                expires = Some(parse_duration(&v).ok_or_else(|| {
+                    format!(
+                        "line {}: invalid expires value '{v}' (expected e.g. '1h', '30d')",
+                        d.line
+                    )
+                })?);
+                None
+            }
             "include" => None,
-            "index" | "try_files" | "autoindex" | "expires"
+            "index" | "try_files" | "autoindex"
             | "proxy_buffering" | "proxy_read_timeout"
             | "proxy_connect_timeout" | "proxy_send_timeout"
             | "proxy_next_upstream" | "proxy_hide_header"
@@ -317,6 +328,7 @@ fn build_location(
         action,
         set_headers,
         add_headers,
+        expires,
     })
 }
 

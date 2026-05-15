@@ -46,6 +46,8 @@ pub struct LocationRt {
     pub path: String,
     pub action: ActionRt,
     pub add_headers: HeaderList,
+    /// `expires` value, applied to every response from this location.
+    pub expires: Option<Duration>,
 }
 
 pub enum ActionRt {
@@ -146,22 +148,36 @@ pub struct Balancer {
 
 impl Balancer {
     /// Pick one available peer for this request, or `None` if every peer is
-    /// down or in a fail cooldown. Backup peers are only considered when no
-    /// primary peer is available.
+    /// down or in a fail cooldown.
     pub fn pick(&self, ctx: &RequestCtx<'_>) -> Option<Arc<Peer>> {
+        self.pick_excluding(ctx, &[])
+    }
+
+    /// Like [`Balancer::pick`], but skip peers whose address appears in
+    /// `exclude`. Used by `proxy_next_upstream` retry to avoid re-picking the
+    /// peer that just failed.
+    pub fn pick_excluding(
+        &self,
+        ctx: &RequestCtx<'_>,
+        exclude: &[String],
+    ) -> Option<Arc<Peer>> {
         let now = now_ms();
 
         let primaries: Vec<&Arc<Peer>> = self
             .peers
             .iter()
-            .filter(|p| !p.backup && p.is_available(now))
+            .filter(|p| {
+                !p.backup && p.is_available(now) && !exclude.iter().any(|x| x == &p.addr)
+            })
             .collect();
         let pool: Vec<&Arc<Peer>> = if !primaries.is_empty() {
             primaries
         } else {
             self.peers
                 .iter()
-                .filter(|p| p.backup && p.is_available(now))
+                .filter(|p| {
+                    p.backup && p.is_available(now) && !exclude.iter().any(|x| x == &p.addr)
+                })
                 .collect()
         };
 
@@ -295,6 +311,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 path: loc.path.clone(),
                 action,
                 add_headers: Arc::new(compile_headers(&loc.add_headers)?),
+                expires: loc.expires,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);

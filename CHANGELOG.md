@@ -2,6 +2,56 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.5.0] - 2026-05-15
+
+Static-serving depth (Phase 3) and proxy retry (Phase 4). **40 unit tests**
+(was 31). Pre-alpha; still no TLS.
+
+### Added
+
+- **Range requests** for static files: `bytes=start-end`, `bytes=start-`,
+  `bytes=-suffix`. Returns `206 Partial Content` with `Content-Range` /
+  `Content-Length`; out-of-range requests get `416 Range Not Satisfiable`.
+  Multi-range and `multipart/byteranges` responses are deferred.
+- **Weak ETags** for static files, built from `mtime` and size:
+  `W/"<size>-<mtime>"`.
+- **`If-None-Match`** conditional GET returns `304 Not Modified` when the
+  client's ETag matches (including the `*` wildcard).
+- **`Last-Modified`** header on every static `200` / `206` / `304`
+  response.
+- **`HEAD`** support: same headers and `Content-Length` as a `GET`, with no
+  body.
+- **`accept-ranges: bytes`** advertised on static responses.
+- **`expires <duration>`** directive in `location` blocks. Sets both
+  `Cache-Control: max-age=N` and an HTTP-date `Expires` header.
+- **`proxy_next_upstream` retry** for idempotent methods (`GET`, `HEAD`,
+  `OPTIONS`, `DELETE`). On connection errors *or* 5xx responses the
+  request is forwarded to the next available peer, up to three attempts
+  total. The failing peer is excluded from the retry pool and recorded as
+  failed (so subsequent passive-health logic kicks in). Non-idempotent
+  methods (`POST`, `PUT`, `PATCH`) still go to a single peer.
+- Minimal IMF-fixdate formatter (`src/http_date.rs`), so we don't pull in
+  a date crate for two header values.
+- `Balancer::pick_excluding(ctx, exclude)` API used by the retry loop.
+
+### Tests
+
+- 40 unit tests, up from 31. Added: 7 for the range-spec parser
+  (including suffix, open-end, clamped end, multi-range rejection, bad
+  prefix) and 2 for the HTTP-date formatter (epoch, two known dates
+  including a leap-day boundary).
+- **Smoke-tested end-to-end** against a real backend:
+  full GET → 200 with all the new headers; HEAD → same headers, no body;
+  range 4-9 → `206 EFGHIJ`; suffix `-5` → `VWXYZ`; open `20-` → `UVWXYZ`;
+  out-of-range `200-300` → `416`; ETag round-trip → `304`;
+  retry on `proxy_pass` to a pool of `{dead, healthy}` → 5/5 `200`s.
+
+### Still deferred
+
+If-Modified-Since (date parsing), gzip, range coalescing, autoindex,
+try_files semantics, TLS, HTTP/2/3, caching, `stream` proxying, active
+health checks, `proxy_next_upstream` configurability. Roadmap unchanged.
+
 ## [0.4.0] - 2026-05-15
 
 Graceful configuration reload (Phase 8). Pre-alpha; still no TLS.
@@ -188,6 +238,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.5.0]: https://github.com/nktkt/Elrond/releases/tag/v0.5.0
 [0.4.0]: https://github.com/nktkt/Elrond/releases/tag/v0.4.0
 [0.3.0]: https://github.com/nktkt/Elrond/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nktkt/Elrond/releases/tag/v0.2.0

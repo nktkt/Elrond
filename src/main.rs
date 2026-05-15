@@ -3,6 +3,7 @@
 mod app;
 mod body;
 mod config;
+mod http_date;
 mod proxy;
 mod request_ctx;
 mod server;

@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.4.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.5.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.4.0
+### What works in v0.5.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -24,8 +24,10 @@ change. See the [changelog](CHANGELOG.md) for what landed.
   bodies, `proxy_set_header`, and `add_header`
 - `return` directive for inline responses (with variables)
 - Static file serving via `root` and `alias` — `index.html` fallback, MIME table, path-traversal
-  protection, server-level `root` cascade
+  protection, server-level `root` cascade, **Range requests, weak ETag, `If-None-Match` → 304,
+  `Last-Modified`, `HEAD`, `expires`**
 - Reverse proxy (`proxy_pass`) to a direct address or a named `upstream`, with streaming bodies
+  and **`proxy_next_upstream` retry** on connect errors / 5xx for idempotent methods
 - `proxy_set_header` and `add_header` with full variable rendering
 - Load balancing: **weighted round-robin, `least_conn`, `ip_hash`**, with passive health
   (`max_fails` / `fail_timeout`), `backup`, and `down` peers

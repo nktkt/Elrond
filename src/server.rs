@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::app::{ActionRt, HeaderList, ServerState};
+use crate::app::{ActionRt, LocationRt, ServerState};
 use crate::body::{text, ElrondBody};
 use crate::request_ctx::RequestCtx;
 use crate::template::Template;
@@ -104,7 +104,7 @@ async fn handle(
 
     let path = uri.path().to_string();
 
-    let (mut response, add_headers): (Response<ElrondBody>, Option<HeaderList>) =
+    let (mut response, matched): (Response<ElrondBody>, Option<&LocationRt>) =
         match state.route(&path) {
             Some(loc) => {
                 let resp = match &loc.action {
@@ -112,7 +112,7 @@ async fn handle(
                         text(*status, body.render(&ctx))
                     }
                     ActionRt::Static { root, kind } => {
-                        static_files::serve(root, kind, &path).await
+                        static_files::serve(root, kind, &path, &headers, &method).await
                     }
                     ActionRt::Proxy {
                         balancer,
@@ -128,13 +128,16 @@ async fn handle(
                         .await
                     }
                 };
-                (resp, Some(loc.add_headers.clone()))
+                (resp, Some(loc))
             }
             None => (text(404, "404 Not Found\n"), None),
         };
 
-    if let Some(list) = add_headers {
-        apply_add_headers(response.headers_mut(), &list, &ctx);
+    if let Some(loc) = matched {
+        apply_add_headers(response.headers_mut(), &loc.add_headers, &ctx);
+        if let Some(d) = loc.expires {
+            apply_expires(response.headers_mut(), d);
+        }
     }
 
     info!(
@@ -160,6 +163,22 @@ fn apply_add_headers(
                 target.insert(name, v);
             }
             Err(_) => debug!("add_header: invalid value for '{name}'"),
+        }
+    }
+}
+
+/// Apply `expires <duration>` semantics: set both `Cache-Control: max-age=N`
+/// and `Expires: <http-date>`.
+fn apply_expires(target: &mut hyper::HeaderMap, dur: std::time::Duration) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = dur.as_secs();
+    if let Ok(v) = HeaderValue::from_str(&format!("max-age={secs}")) {
+        target.insert("cache-control", v);
+    }
+    if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
+        let expiry = now.as_secs().saturating_add(secs);
+        if let Ok(v) = HeaderValue::from_str(&crate::http_date::format(expiry)) {
+            target.insert("expires", v);
         }
     }
 }
