@@ -51,6 +51,10 @@ fn build_http(dirs: &[Directive]) -> Result<Http, String> {
                 let zone = parse_cache_path(&d.args, d.line)?;
                 http.cache_zones.push(zone);
             }
+            "limit_req_zone" => {
+                let zone = parse_limit_req_zone(&d.args, d.line)?;
+                http.limit_req_zones.push(zone);
+            }
             "include" => {}
             "error_log" | "sendfile" | "tcp_nopush" | "tcp_nodelay"
             | "keepalive_timeout" | "types_hash_max_size" | "default_type"
@@ -355,6 +359,7 @@ fn build_location(
     let mut autoindex: bool = false;
     let mut auth_basic_realm: Option<String> = None;
     let mut auth_basic_user_file: Option<String> = None;
+    let mut limit_req: Option<(String, u32)> = None;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -430,6 +435,11 @@ fn build_location(
                 auth_basic_user_file = Some(arg1(d)?);
                 None
             }
+            "limit_req" => {
+                limit_req = Some(parse_limit_req(&d.args, d.line)?);
+                None
+            }
+            "limit_req_status" | "limit_conn" | "limit_conn_status" => None,
             "include" => None,
             "index" | "try_files"
             | "proxy_buffering" | "proxy_read_timeout"
@@ -485,10 +495,77 @@ fn build_location(
         autoindex,
         auth_basic_realm,
         auth_basic_user_file,
+        limit_req,
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,
     })
+}
+
+/// Parse `limit_req_zone <key> zone=NAME:SIZE rate=Nr/s;`.
+fn parse_limit_req_zone(
+    args: &[String],
+    line: usize,
+) -> Result<LimitReqZoneDecl, String> {
+    if args.len() < 3 {
+        return Err(format!(
+            "line {line}: 'limit_req_zone' requires '<key> zone=NAME:SIZE rate=Nr/s'"
+        ));
+    }
+    let key_template = Template::parse(&args[0]);
+    let mut name: Option<String> = None;
+    let mut max_entries: Option<usize> = None;
+    let mut rate_per_sec: Option<f64> = None;
+
+    for a in args.iter().skip(1) {
+        if let Some(spec) = a.strip_prefix("zone=") {
+            let (n, size) = spec
+                .split_once(':')
+                .ok_or_else(|| format!("line {line}: zone= must be NAME:SIZE"))?;
+            let bytes = parse_size(size).ok_or_else(|| {
+                format!("line {line}: invalid zone size '{size}'")
+            })?;
+            name = Some(n.to_string());
+            // Translate bytes into an entry cap.
+            max_entries = Some(
+                (bytes / crate::limit::APPROX_BYTES_PER_ENTRY).max(1),
+            );
+        } else if let Some(rs) = a.strip_prefix("rate=") {
+            rate_per_sec = Some(crate::limit::parse_rate(rs).ok_or_else(|| {
+                format!("line {line}: invalid rate '{rs}' (expected e.g. '5r/s', '60r/m')")
+            })?);
+        }
+    }
+
+    Ok(LimitReqZoneDecl {
+        name: name
+            .ok_or_else(|| format!("line {line}: 'limit_req_zone' missing 'zone=NAME:SIZE'"))?,
+        key_template,
+        rate_per_sec: rate_per_sec
+            .ok_or_else(|| format!("line {line}: 'limit_req_zone' missing 'rate=Nr/s'"))?,
+        max_entries: max_entries.unwrap_or(1024),
+    })
+}
+
+/// Parse `limit_req zone=NAME [burst=N] [nodelay];`. `nodelay` is parsed
+/// for compatibility but is the only mode v0.17.0 implements.
+fn parse_limit_req(args: &[String], line: usize) -> Result<(String, u32), String> {
+    let mut zone: Option<String> = None;
+    let mut burst: u32 = 0;
+    for a in args {
+        if let Some(z) = a.strip_prefix("zone=") {
+            zone = Some(z.to_string());
+        } else if let Some(b) = a.strip_prefix("burst=") {
+            burst = b
+                .parse()
+                .map_err(|_| format!("line {line}: invalid burst '{b}'"))?;
+        }
+        // "nodelay" / "delay=N" accepted; nodelay is implicit today.
+    }
+    Ok((
+        zone.ok_or_else(|| format!("line {line}: 'limit_req' requires 'zone=NAME'"))?,
+        burst,
+    ))
 }
 
 /// Parse a `proxy_cache_path` directive. v0.11.0 needs only the

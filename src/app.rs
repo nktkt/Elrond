@@ -75,6 +75,8 @@ pub struct LocationRt {
     pub autoindex: bool,
     /// HTTP Basic auth, loaded at config-build time.
     pub auth: Option<Arc<crate::auth::AuthBasic>>,
+    /// `limit_req` enforcement for this location.
+    pub limit_req: Option<crate::limit::LimitReqApply>,
 }
 
 pub enum ActionRt {
@@ -306,6 +308,20 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             crate::cache::CacheStore::new(z.name.clone(), z.max_bytes),
         );
     }
+    // Build limit_req zones.
+    let mut limit_req_zones: HashMap<String, Arc<crate::limit::LimitReqZone>> =
+        HashMap::new();
+    for z in &http.limit_req_zones {
+        limit_req_zones.insert(
+            z.name.clone(),
+            Arc::new(crate::limit::LimitReqZone::new(
+                z.name.clone(),
+                z.key_template.clone(),
+                z.rate_per_sec,
+                z.max_entries,
+            )),
+        );
+    }
 
     let mut balancers: HashMap<String, Arc<Balancer>> = HashMap::new();
     for up in &http.upstreams {
@@ -402,6 +418,19 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 ),
                 _ => None,
             };
+            let limit_req = if let Some((zone_name, burst)) = &loc.limit_req {
+                let zone = limit_req_zones.get(zone_name).cloned().ok_or_else(|| {
+                    format!(
+                        "location uses 'limit_req zone={zone_name}' but no 'limit_req_zone' declares that zone"
+                    )
+                })?;
+                Some(crate::limit::LimitReqApply {
+                    zone,
+                    burst: *burst,
+                })
+            } else {
+                None
+            };
             let location_rt = LocationRt {
                 path: loc.path.clone(),
                 action,
@@ -410,6 +439,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 gzip: loc.gzip,
                 autoindex: loc.autoindex,
                 auth,
+                limit_req,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);

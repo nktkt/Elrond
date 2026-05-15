@@ -31,6 +31,8 @@ static CACHE_BYPASS: AtomicU64 = AtomicU64::new(0);
 static CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
 static CACHE_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static CACHE_EVICTED_BYTES: AtomicU64 = AtomicU64::new(0);
+static LIMIT_REQ_ALLOWED: AtomicU64 = AtomicU64::new(0);
+static LIMIT_REQ_DENIED: AtomicU64 = AtomicU64::new(0);
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -92,6 +94,12 @@ pub fn set_cache_bytes(v: u64) {
 }
 pub fn set_cache_entries(v: u64) {
     CACHE_ENTRIES.store(v, Ordering::Relaxed);
+}
+pub fn record_limit_req_allowed() {
+    LIMIT_REQ_ALLOWED.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_limit_req_denied() {
+    LIMIT_REQ_DENIED.fetch_add(1, Ordering::Relaxed);
 }
 
 /// RAII guard for in-flight stream (TCP-proxy) connections.
@@ -206,6 +214,16 @@ pub fn render(version: &str) -> String {
             "elrond_cache_evicted_bytes_total",
             CACHE_EVICTED_BYTES.load(Ordering::Relaxed),
             "Bytes removed from the proxy cache through eviction or expiry.",
+        ),
+        (
+            "elrond_limit_req_allowed_total",
+            LIMIT_REQ_ALLOWED.load(Ordering::Relaxed),
+            "Requests allowed by limit_req.",
+        ),
+        (
+            "elrond_limit_req_denied_total",
+            LIMIT_REQ_DENIED.load(Ordering::Relaxed),
+            "Requests denied (503) by limit_req.",
         ),
     ];
     for (name, value, help) in counters {

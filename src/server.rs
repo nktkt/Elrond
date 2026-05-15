@@ -170,6 +170,24 @@ async fn handle(
     let (mut response, matched): (Response<ElrondBody>, Option<&LocationRt>) =
         match state.route(&path) {
             Some(loc) => {
+                // limit_req — rate-limit checks come first so we don't
+                // do auth or upstream work just to throw it away on 503.
+                if let Some(apply) = &loc.limit_req {
+                    if let Some(denied) = crate::limit::enforce(apply, &ctx) {
+                        let status = denied.status().as_u16();
+                        metrics::record_request(status);
+                        info!(
+                            target: "access",
+                            "{} \"{} {}\" {} (limit_req)",
+                            peer.ip(),
+                            method,
+                            path,
+                            status
+                        );
+                        return Ok(denied);
+                    }
+                }
+
                 // auth_basic — challenge before doing any work.
                 if let Some(auth) = &loc.auth {
                     if let Err(challenge) = crate::auth::check(auth, &headers) {

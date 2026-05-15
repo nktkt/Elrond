@@ -2,6 +2,65 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.17.0] - 2026-05-15
+
+**Rate limiting (`limit_req`).** 70 unit tests. Pre-alpha.
+
+The natural pairing with `auth_basic`: per-IP throttling protects login
+endpoints from brute force, public APIs from runaway clients, and the
+cache from one bad actor running it dry.
+
+### Added
+
+- **`limit_req_zone <key> zone=NAME:SIZE rate=Nr/s;`** at http level.
+  `key` is a variable template (commonly `$remote_addr`, but
+  `$arg_token` etc. work too). `SIZE` accepts `k` / `m` / `g` suffixes;
+  Elrond translates bytes to an entry cap at ~64 bytes/entry.
+- **`limit_req zone=NAME [burst=N];`** at location level. `nodelay` and
+  `delay=N` are accepted for syntactic compatibility but the
+  implementation is always "nodelay" today — over-budget requests get
+  an immediate `503`.
+- **Token-bucket implementation** (`src/limit.rs`): each key has a
+  bucket of capacity `burst + 1` that refills at `rate` tokens/sec.
+- **Eviction.** When the zone reaches `max_entries`, the
+  least-recently-touched key is dropped on the next insertion, so a
+  burst of one-off keys can't exhaust memory.
+- `limit_req` is checked **before** `auth_basic`, so a request the
+  rate-limit denies never reaches password verification — important
+  for keeping bcrypt CPU low during a brute-force attempt.
+- **Metrics:** `elrond_limit_req_allowed_total`,
+  `elrond_limit_req_denied_total`.
+
+### Tests
+
+- 70 unit tests (was 64). 6 new in `limit::tests`:
+  - `allows_first_burst_immediately`
+  - `denies_after_burst_drained`
+  - `separate_keys_have_separate_buckets`
+  - `refill_replenishes_tokens` (sleeps 20 ms, verifies refill)
+  - `parses_rate_specs` (`5r/s`, `60r/m`, malformed input)
+  - `eviction_caps_entries`
+
+### Verified end-to-end
+
+Config: `limit_req_zone $remote_addr zone=api:10m rate=5r/s; … limit_req
+zone=api burst=3;` — capacity = burst + 1 = 4.
+
+```
+GET /api/ × 10 →  200 200 200 200 503 503 503 503 503 503
+/metrics    →  elrond_limit_req_allowed_total 4
+                elrond_limit_req_denied_total 6
+```
+
+### Known follow-ups
+
+- No `limit_conn` (concurrent-connection limit) yet — the obvious next
+  small feature.
+- `nodelay` is the only mode; queued/delayed shaping not yet.
+- Configurable deny status (`limit_req_status`) accepted but ignored
+  (always `503`).
+- No per-zone metrics labeling — counters are global.
+
 ## [0.16.0] - 2026-05-15
 
 **HTTP Basic auth (`auth_basic`).** 64 unit tests. Pre-alpha.
@@ -751,6 +810,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.17.0]: https://github.com/nktkt/Elrond/releases/tag/v0.17.0
 [0.16.0]: https://github.com/nktkt/Elrond/releases/tag/v0.16.0
 [0.15.0]: https://github.com/nktkt/Elrond/releases/tag/v0.15.0
 [0.14.0]: https://github.com/nktkt/Elrond/releases/tag/v0.14.0

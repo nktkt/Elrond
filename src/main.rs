@@ -7,6 +7,7 @@ mod cache;
 mod config;
 mod gzip;
 mod http_date;
+mod limit;
 mod metrics;
 mod proxy;
 mod request_ctx;
