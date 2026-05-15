@@ -170,6 +170,22 @@ async fn handle(
     let (mut response, matched): (Response<ElrondBody>, Option<&LocationRt>) =
         match state.route(&path) {
             Some(loc) => {
+                // auth_basic — challenge before doing any work.
+                if let Some(auth) = &loc.auth {
+                    if let Err(challenge) = crate::auth::check(auth, &headers) {
+                        let status = challenge.status().as_u16();
+                        metrics::record_request(status);
+                        info!(
+                            target: "access",
+                            "{} \"{} {}\" {} (auth_basic challenge)",
+                            peer.ip(),
+                            method,
+                            path,
+                            status
+                        );
+                        return Ok(challenge);
+                    }
+                }
                 let resp = match &loc.action {
                     ActionRt::Return { status, body } => {
                         text(*status, body.render(&ctx))

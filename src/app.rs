@@ -73,6 +73,8 @@ pub struct LocationRt {
     /// `autoindex on;` — render a directory listing when the path is a
     /// directory and `index.html` is absent.
     pub autoindex: bool,
+    /// HTTP Basic auth, loaded at config-build time.
+    pub auth: Option<Arc<crate::auth::AuthBasic>>,
 }
 
 pub enum ActionRt {
@@ -394,6 +396,12 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             // level entry overrides a server-level one with the same name.
             let mut merged_headers = s.add_headers.clone();
             merged_headers.extend(loc.add_headers.iter().cloned());
+            let auth = match (&loc.auth_basic_realm, &loc.auth_basic_user_file) {
+                (Some(realm), Some(file)) => Some(
+                    crate::auth::AuthBasic::load(std::path::Path::new(file), realm.clone())?,
+                ),
+                _ => None,
+            };
             let location_rt = LocationRt {
                 path: loc.path.clone(),
                 action,
@@ -401,6 +409,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 expires: loc.expires,
                 gzip: loc.gzip,
                 autoindex: loc.autoindex,
+                auth,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);

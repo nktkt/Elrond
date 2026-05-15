@@ -2,6 +2,55 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.16.0] - 2026-05-15
+
+**HTTP Basic auth (`auth_basic`).** 64 unit tests. Pre-alpha.
+
+### Added
+
+- **`auth_basic <realm>;`** at location level. `auth_basic off;` disables.
+- **`auth_basic_user_file <path>;`** — htpasswd-style file.
+- **Bcrypt-only** password hashes. Plain-text passwords, Apache APR1
+  (`$apr1$…`), and the SHA-1 variant `{SHA}…` are **rejected at
+  configuration-load time** with a line-numbered error that suggests
+  `htpasswd -nbB user password`. We refuse weak crypto rather than
+  silently accepting it.
+- `WWW-Authenticate: Basic realm="<realm>"` on every `401`, with the
+  realm string properly quoted.
+- A clear `400`/`401` separation: bad base64, wrong scheme, missing
+  user, and wrong password all return `401` with the same challenge.
+- New deps: `bcrypt = "0.16"` and `base64 = "0.22"`.
+
+### Tests
+
+- 64 unit tests (was 60). 4 new in `auth::tests`:
+  - Plain-text entries rejected with a clear message.
+  - APR1 entries rejected.
+  - Bcrypt hash loaded and verified (using a freshly minted cost-4 hash
+    for "swordfish").
+  - Empty / comment-only files rejected.
+
+### Verified end-to-end
+
+- Public location: `200`.
+- Private location, no credentials → `401` + `WWW-Authenticate: Basic
+  realm="private area"`.
+- Wrong password → `401`.
+- Correct password (`-u alice:swordfish`) → `200`.
+- Plaintext htpasswd at startup:
+  `config error: /tmp/bad.htpasswd:1: user 'alice' uses a non-bcrypt
+  hash. Elrond only accepts bcrypt (\`$2y$…\`, \`$2a$…\`, \`$2b$…\`).
+  Re-create with \`htpasswd -nbB user password\`.`
+
+### Known follow-ups
+
+- `auth_basic` is enforced at location level only — no server-level
+  cascade yet. Add to every location that needs it.
+- Brute-force protection is the deployer's responsibility today. A
+  per-IP `limit_req` is the right pairing once that directive lands.
+- No `satisfy any|all` semantics (Nginx combines `auth_basic` with
+  `allow/deny`); we don't have `allow/deny` yet.
+
 ## [0.15.0] - 2026-05-15
 
 **TLS certificate hot-reload via `SIGHUP`.** 60 unit tests. Pre-alpha.
@@ -702,6 +751,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.16.0]: https://github.com/nktkt/Elrond/releases/tag/v0.16.0
 [0.15.0]: https://github.com/nktkt/Elrond/releases/tag/v0.15.0
 [0.14.0]: https://github.com/nktkt/Elrond/releases/tag/v0.14.0
 [0.13.0]: https://github.com/nktkt/Elrond/releases/tag/v0.13.0

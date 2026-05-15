@@ -353,6 +353,8 @@ fn build_location(
     let mut expires: Option<std::time::Duration> = None;
     let mut gzip: Option<bool> = None;
     let mut autoindex: bool = false;
+    let mut auth_basic_realm: Option<String> = None;
+    let mut auth_basic_user_file: Option<String> = None;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -419,6 +421,15 @@ fn build_location(
                 autoindex = parse_on_off(d.args.first().map(String::as_str), d.line)?;
                 None
             }
+            "auth_basic" => {
+                let realm = arg1(d)?;
+                auth_basic_realm = if realm == "off" { None } else { Some(realm) };
+                None
+            }
+            "auth_basic_user_file" => {
+                auth_basic_user_file = Some(arg1(d)?);
+                None
+            }
             "include" => None,
             "index" | "try_files"
             | "proxy_buffering" | "proxy_read_timeout"
@@ -456,6 +467,13 @@ fn build_location(
         },
     };
 
+    if auth_basic_realm.is_some() && auth_basic_user_file.is_none() {
+        return Err(format!(
+            "line {line}: location '{path}' has 'auth_basic' but no \
+             'auth_basic_user_file'"
+        ));
+    }
+
     Ok(Location {
         kind,
         path,
@@ -465,6 +483,8 @@ fn build_location(
         expires,
         gzip,
         autoindex,
+        auth_basic_realm,
+        auth_basic_user_file,
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,

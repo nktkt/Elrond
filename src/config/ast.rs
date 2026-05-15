@@ -133,6 +133,10 @@ pub struct Location {
     /// `autoindex on|off;` — render a directory listing when the path
     /// resolves to a directory and no `index.html` is present.
     pub autoindex: bool,
+    /// `auth_basic <realm>;` — HTTP Basic auth realm. Disabled when empty.
+    pub auth_basic_realm: Option<String>,
+    /// `auth_basic_user_file <path>;` — htpasswd-style file (bcrypt only).
+    pub auth_basic_user_file: Option<String>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to
