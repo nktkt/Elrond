@@ -33,6 +33,8 @@ static CACHE_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static CACHE_EVICTED_BYTES: AtomicU64 = AtomicU64::new(0);
 static LIMIT_REQ_ALLOWED: AtomicU64 = AtomicU64::new(0);
 static LIMIT_REQ_DENIED: AtomicU64 = AtomicU64::new(0);
+static LIMIT_CONN_ALLOWED: AtomicU64 = AtomicU64::new(0);
+static LIMIT_CONN_DENIED: AtomicU64 = AtomicU64::new(0);
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -100,6 +102,12 @@ pub fn record_limit_req_allowed() {
 }
 pub fn record_limit_req_denied() {
     LIMIT_REQ_DENIED.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_limit_conn_allowed() {
+    LIMIT_CONN_ALLOWED.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_limit_conn_denied() {
+    LIMIT_CONN_DENIED.fetch_add(1, Ordering::Relaxed);
 }
 
 /// RAII guard for in-flight stream (TCP-proxy) connections.
@@ -224,6 +232,16 @@ pub fn render(version: &str) -> String {
             "elrond_limit_req_denied_total",
             LIMIT_REQ_DENIED.load(Ordering::Relaxed),
             "Requests denied (503) by limit_req.",
+        ),
+        (
+            "elrond_limit_conn_allowed_total",
+            LIMIT_CONN_ALLOWED.load(Ordering::Relaxed),
+            "Connections allowed by limit_conn.",
+        ),
+        (
+            "elrond_limit_conn_denied_total",
+            LIMIT_CONN_DENIED.load(Ordering::Relaxed),
+            "Connections denied (503) by limit_conn.",
         ),
     ];
     for (name, value, help) in counters {

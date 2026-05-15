@@ -142,6 +142,97 @@ fn deny_response() -> Response<ElrondBody> {
     text(503, "503 Service Unavailable\n")
 }
 
+/// `limit_conn_zone` — concurrent-in-flight counter per key.
+///
+/// Unlike `limit_req` this has no time component: each accepted request
+/// holds one count via a RAII guard, released when the response future is
+/// dropped. Past `max_conn`, the next request gets `503`.
+pub struct LimitConnZone {
+    pub name: String,
+    pub key_template: Template,
+    pub max_entries: usize,
+    state: Mutex<HashMap<String, u32>>,
+}
+
+impl LimitConnZone {
+    pub fn new(name: String, key_template: Template, max_entries: usize) -> Self {
+        LimitConnZone {
+            name,
+            key_template,
+            max_entries,
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Reserve a slot. Returns `Some(LimitConnGuard)` if under cap;
+    /// `None` if the key has already reached `max_conn`.
+    pub fn try_acquire(
+        self: &std::sync::Arc<Self>,
+        key: &str,
+        max_conn: u32,
+    ) -> Option<LimitConnGuard> {
+        let mut s = self.state.lock().ok()?;
+        // Evict (drop zero entries) if at cap and key is new.
+        if !s.contains_key(key) && s.len() >= self.max_entries {
+            // Try removing any zero entry first.
+            let dead = s
+                .iter()
+                .find(|(_, &v)| v == 0)
+                .map(|(k, _)| k.clone());
+            if let Some(d) = dead {
+                s.remove(&d);
+            }
+        }
+        let count = s.entry(key.to_string()).or_insert(0);
+        if *count >= max_conn {
+            metrics::record_limit_conn_denied();
+            return None;
+        }
+        *count += 1;
+        metrics::record_limit_conn_allowed();
+        Some(LimitConnGuard {
+            zone: self.clone(),
+            key: key.to_string(),
+        })
+    }
+}
+
+/// RAII guard: decrements the per-key counter when dropped. Held inside
+/// the request future so it lives exactly as long as the request.
+pub struct LimitConnGuard {
+    zone: std::sync::Arc<LimitConnZone>,
+    key: String,
+}
+
+impl Drop for LimitConnGuard {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.zone.state.lock() {
+            if let Some(count) = s.get_mut(&self.key) {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LimitConnApply {
+    pub zone: std::sync::Arc<LimitConnZone>,
+    pub max_conn: u32,
+}
+
+/// Try to acquire a slot. On allow, returns the guard (to be held for the
+/// duration of the request). On deny, returns the 503 to send back.
+pub fn enforce_conn(
+    apply: &LimitConnApply,
+    ctx: &RequestCtx<'_>,
+) -> Result<LimitConnGuard, Response<ElrondBody>> {
+    let key = apply.zone.key_template.render(ctx);
+    apply
+        .zone
+        .try_acquire(&key, apply.max_conn)
+        .ok_or_else(deny_response)
+}
+
 /// Parse a rate spec like `5r/s`, `100r/s`, `60r/m`. Returns
 /// requests-per-second.
 pub fn parse_rate(s: &str) -> Option<f64> {
@@ -219,6 +310,27 @@ mod tests {
         assert_eq!(parse_rate("100r/s "), Some(100.0));
         assert_eq!(parse_rate("nonsense"), None);
         assert_eq!(parse_rate("5r/h"), None);
+    }
+
+    #[test]
+    fn limit_conn_basic() {
+        let z = std::sync::Arc::new(LimitConnZone::new(
+            "c".into(),
+            Template::parse("$remote_addr"),
+            128,
+        ));
+        let g1 = z.try_acquire("alice", 2).expect("first OK");
+        let g2 = z.try_acquire("alice", 2).expect("second OK");
+        assert!(
+            z.try_acquire("alice", 2).is_none(),
+            "third should be denied"
+        );
+        // Drop one; new acquire should succeed.
+        drop(g1);
+        let _g3 = z.try_acquire("alice", 2).expect("after drop OK");
+        // Other keys are independent.
+        let _other = z.try_acquire("bob", 2).expect("other key OK");
+        drop(g2);
     }
 
     #[test]

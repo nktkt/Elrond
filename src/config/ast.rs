@@ -36,6 +36,15 @@ pub struct Http {
     pub cache_zones: Vec<CacheZone>,
     /// `limit_req_zone … zone=NAME:SIZE rate=Nr/s;` zone declarations.
     pub limit_req_zones: Vec<LimitReqZoneDecl>,
+    /// `limit_conn_zone <key> zone=NAME:SIZE;` zone declarations.
+    pub limit_conn_zones: Vec<LimitConnZoneDecl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LimitConnZoneDecl {
+    pub name: String,
+    pub key_template: Template,
+    pub max_entries: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +158,8 @@ pub struct Location {
     pub auth_basic_user_file: Option<String>,
     /// `limit_req zone=NAME [burst=N];` — pointer into `Http.limit_req_zones`.
     pub limit_req: Option<(String, u32)>,
+    /// `limit_conn zone=NAME N;` — pointer into `Http.limit_conn_zones`.
+    pub limit_conn: Option<(String, u32)>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

@@ -77,6 +77,8 @@ pub struct LocationRt {
     pub auth: Option<Arc<crate::auth::AuthBasic>>,
     /// `limit_req` enforcement for this location.
     pub limit_req: Option<crate::limit::LimitReqApply>,
+    /// `limit_conn` enforcement for this location.
+    pub limit_conn: Option<crate::limit::LimitConnApply>,
 }
 
 pub enum ActionRt {
@@ -322,6 +324,19 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             )),
         );
     }
+    // Build limit_conn zones.
+    let mut limit_conn_zones: HashMap<String, Arc<crate::limit::LimitConnZone>> =
+        HashMap::new();
+    for z in &http.limit_conn_zones {
+        limit_conn_zones.insert(
+            z.name.clone(),
+            Arc::new(crate::limit::LimitConnZone::new(
+                z.name.clone(),
+                z.key_template.clone(),
+                z.max_entries,
+            )),
+        );
+    }
 
     let mut balancers: HashMap<String, Arc<Balancer>> = HashMap::new();
     for up in &http.upstreams {
@@ -431,6 +446,19 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             } else {
                 None
             };
+            let limit_conn = if let Some((zone_name, max_conn)) = &loc.limit_conn {
+                let zone = limit_conn_zones.get(zone_name).cloned().ok_or_else(|| {
+                    format!(
+                        "location uses 'limit_conn zone={zone_name}' but no 'limit_conn_zone' declares that zone"
+                    )
+                })?;
+                Some(crate::limit::LimitConnApply {
+                    zone,
+                    max_conn: *max_conn,
+                })
+            } else {
+                None
+            };
             let location_rt = LocationRt {
                 path: loc.path.clone(),
                 action,
@@ -440,6 +468,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 autoindex: loc.autoindex,
                 auth,
                 limit_req,
+                limit_conn,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);

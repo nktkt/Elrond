@@ -188,6 +188,29 @@ async fn handle(
                     }
                 }
 
+                // limit_conn — try to acquire a slot, held by an RAII guard
+                // for the lifetime of this request.
+                let _conn_guard = if let Some(apply) = &loc.limit_conn {
+                    match crate::limit::enforce_conn(apply, &ctx) {
+                        Ok(g) => Some(g),
+                        Err(denied) => {
+                            let status = denied.status().as_u16();
+                            metrics::record_request(status);
+                            info!(
+                                target: "access",
+                                "{} \"{} {}\" {} (limit_conn)",
+                                peer.ip(),
+                                method,
+                                path,
+                                status
+                            );
+                            return Ok(denied);
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 // auth_basic — challenge before doing any work.
                 if let Some(auth) = &loc.auth {
                     if let Err(challenge) = crate::auth::check(auth, &headers) {

@@ -2,6 +2,53 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.18.0] - 2026-05-15
+
+**Concurrent-connection limiting (`limit_conn`).** 71 unit tests.
+Pre-alpha.
+
+The companion to `limit_req`: where rate caps requests-per-second,
+`limit_conn` caps simultaneous in-flight per key. Together they cover
+both bursty and long-tail abuse.
+
+### Added
+
+- **`limit_conn_zone <key> zone=NAME:SIZE;`** at http level. Same key-
+  template / size-spec parsing as `limit_req_zone`.
+- **`limit_conn zone=NAME N;`** (or `limit_conn NAME N;`) at location
+  level — at most `N` simultaneous in-flight requests for any given
+  key value.
+- **RAII guard.** Acquiring a slot returns a `LimitConnGuard` held
+  inside the request future; the counter is decremented automatically
+  when the future drops, even if it panics or is cancelled.
+- **Metrics:** `elrond_limit_conn_allowed_total`,
+  `elrond_limit_conn_denied_total`.
+- `limit_conn` is enforced **after** `limit_req` (rate first, count
+  second), so a request that would already be denied for being too
+  fast never takes a connection slot.
+
+### Tests
+
+- 71 unit tests (was 70). 1 new: `limit_conn_basic` — verifies
+  acquire/deny/release semantics for one and two keys.
+
+### Verified end-to-end
+
+`limit_conn perip 2;` against a backend that sleeps 800 ms:
+
+```
+5 concurrent GET /slow/ → 2× 200, 3× 503
+(after sleep)           → single GET → 200
+/metrics                → allowed=3, denied=3
+```
+
+### Known follow-ups
+
+- Configurable deny status (`limit_conn_status`) is accepted but
+  ignored (always `503`).
+- No per-zone metric labeling.
+- No queueing — over-limit requests get `503` immediately.
+
 ## [0.17.0] - 2026-05-15
 
 **Rate limiting (`limit_req`).** 70 unit tests. Pre-alpha.
@@ -810,6 +857,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.18.0]: https://github.com/nktkt/Elrond/releases/tag/v0.18.0
 [0.17.0]: https://github.com/nktkt/Elrond/releases/tag/v0.17.0
 [0.16.0]: https://github.com/nktkt/Elrond/releases/tag/v0.16.0
 [0.15.0]: https://github.com/nktkt/Elrond/releases/tag/v0.15.0

@@ -55,6 +55,10 @@ fn build_http(dirs: &[Directive]) -> Result<Http, String> {
                 let zone = parse_limit_req_zone(&d.args, d.line)?;
                 http.limit_req_zones.push(zone);
             }
+            "limit_conn_zone" => {
+                let zone = parse_limit_conn_zone(&d.args, d.line)?;
+                http.limit_conn_zones.push(zone);
+            }
             "include" => {}
             "error_log" | "sendfile" | "tcp_nopush" | "tcp_nodelay"
             | "keepalive_timeout" | "types_hash_max_size" | "default_type"
@@ -360,6 +364,7 @@ fn build_location(
     let mut auth_basic_realm: Option<String> = None;
     let mut auth_basic_user_file: Option<String> = None;
     let mut limit_req: Option<(String, u32)> = None;
+    let mut limit_conn: Option<(String, u32)> = None;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -439,7 +444,11 @@ fn build_location(
                 limit_req = Some(parse_limit_req(&d.args, d.line)?);
                 None
             }
-            "limit_req_status" | "limit_conn" | "limit_conn_status" => None,
+            "limit_conn" => {
+                limit_conn = Some(parse_limit_conn(&d.args, d.line)?);
+                None
+            }
+            "limit_req_status" | "limit_conn_status" => None,
             "include" => None,
             "index" | "try_files"
             | "proxy_buffering" | "proxy_read_timeout"
@@ -496,10 +505,61 @@ fn build_location(
         auth_basic_realm,
         auth_basic_user_file,
         limit_req,
+        limit_conn,
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,
     })
+}
+
+fn parse_limit_conn_zone(
+    args: &[String],
+    line: usize,
+) -> Result<LimitConnZoneDecl, String> {
+    if args.len() < 2 {
+        return Err(format!(
+            "line {line}: 'limit_conn_zone' requires '<key> zone=NAME:SIZE'"
+        ));
+    }
+    let key_template = Template::parse(&args[0]);
+    let mut name: Option<String> = None;
+    let mut max_entries: Option<usize> = None;
+    for a in args.iter().skip(1) {
+        if let Some(spec) = a.strip_prefix("zone=") {
+            let (n, size) = spec
+                .split_once(':')
+                .ok_or_else(|| format!("line {line}: zone= must be NAME:SIZE"))?;
+            let bytes = parse_size(size).ok_or_else(|| {
+                format!("line {line}: invalid zone size '{size}'")
+            })?;
+            name = Some(n.to_string());
+            max_entries = Some((bytes / 16).max(1));
+        }
+    }
+    Ok(LimitConnZoneDecl {
+        name: name.ok_or_else(|| {
+            format!("line {line}: 'limit_conn_zone' missing 'zone=NAME:SIZE'")
+        })?,
+        key_template,
+        max_entries: max_entries.unwrap_or(4096),
+    })
+}
+
+fn parse_limit_conn(args: &[String], line: usize) -> Result<(String, u32), String> {
+    if args.len() < 2 {
+        return Err(format!(
+            "line {line}: 'limit_conn' requires 'zone=NAME N' (or 'NAME N')"
+        ));
+    }
+    let zone = if let Some(z) = args[0].strip_prefix("zone=") {
+        z.to_string()
+    } else {
+        args[0].clone()
+    };
+    let max_conn: u32 = args[1].parse().map_err(|_| {
+        format!("line {line}: 'limit_conn' max '{}' is not a number", args[1])
+    })?;
+    Ok((zone, max_conn))
 }
 
 /// Parse `limit_req_zone <key> zone=NAME:SIZE rate=Nr/s;`.
