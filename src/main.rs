@@ -4,6 +4,7 @@ mod app;
 mod body;
 mod config;
 mod http_date;
+mod metrics;
 mod proxy;
 mod request_ctx;
 mod server;
@@ -19,7 +20,7 @@ use tracing::{error, info, warn};
 
 use crate::supervisor::Supervisor;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -54,6 +55,7 @@ async fn main() -> ExitCode {
     }
 
     init_tracing();
+    metrics::init();
     tls::install_crypto_provider();
 
     let cfg = match config::load(&config_path) {

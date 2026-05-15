@@ -2,6 +2,56 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.8.0] - 2026-05-15
+
+**Prometheus `/metrics` endpoint (observability cross-cut).** 42 unit tests.
+Pre-alpha.
+
+### Added
+
+- **`metrics;` content directive** for a `location` block, exposing process
+  metrics in Prometheus text-exposition format. Example:
+  ```nginx
+  location = /metrics { metrics; }
+  ```
+- **`src/metrics.rs`** — atomic counters and gauges updated from the
+  request/connection hot path.
+- **Metrics exposed:**
+  - `elrond_build_info{version="…"} 1`
+  - `elrond_uptime_seconds`
+  - `elrond_requests_total`
+  - `elrond_responses_total{status_class="1xx|2xx|3xx|4xx|5xx"}`
+  - `elrond_connections_accepted_total`
+  - `elrond_active_connections`
+  - `elrond_proxy_attempts_total` (includes retries)
+  - `elrond_proxy_failures_total`
+  - `elrond_tls_handshakes_total`
+  - `elrond_tls_handshake_failures_total`
+- **RAII `ConnGuard`** auto-decrements the active-connections gauge when
+  the connection task drops.
+- Content-Type is the canonical `text/plain; version=0.0.4; charset=utf-8`
+  so Prometheus scrapers recognize it without configuration.
+
+### Tests
+
+- 42 unit tests (one new: `metrics::tests::render_emits_required_metrics`
+  validates every metric name appears, every `# TYPE` line names a
+  documented metric type).
+- **Smoke-tested end-to-end:** drove healthz traffic + proxy traffic +
+  killed-backend traffic, then scraped `/metrics`. Counters reflected
+  the observed traffic; `proxy_failures_total` matched the
+  passive-health behavior (only the first attempt on a dead peer
+  counts, subsequent picks are skipped until `fail_timeout`).
+
+### Known limitations
+
+- No per-server / per-upstream label dimensions yet — counters are
+  process-global.
+- No histograms (request latency) yet.
+- No `/metrics` endpoint protection: anyone reaching the listener can
+  scrape it. Authentication / IP allow-lists land later via an
+  `allow`/`deny` directive.
+
 ## [0.7.0] - 2026-05-15
 
 **HTTP/2 over TLS (Phase 7).** 41 unit tests. Pre-alpha.
@@ -334,6 +384,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.8.0]: https://github.com/nktkt/Elrond/releases/tag/v0.8.0
 [0.7.0]: https://github.com/nktkt/Elrond/releases/tag/v0.7.0
 [0.6.0]: https://github.com/nktkt/Elrond/releases/tag/v0.6.0
 [0.5.0]: https://github.com/nktkt/Elrond/releases/tag/v0.5.0

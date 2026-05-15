@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 
 use crate::app::{Balancer, HeaderList, Peer};
 use crate::body::{text, BoxError, ElrondBody};
+use crate::metrics;
 use crate::request_ctx::RequestCtx;
 
 const HOP_BY_HOP: [&str; 8] = [
@@ -85,12 +86,14 @@ pub async fn forward(
             upstream_peer.addr
         );
 
+        metrics::record_proxy_attempt();
         let req2 = build_request(&parts, empty_body());
         match forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx).await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 if (500..600).contains(&status) {
                     upstream_peer.record_failure();
+                    metrics::record_proxy_failure();
                     excluded.push(upstream_peer.addr.clone());
                     last = Some(resp);
                     continue;
@@ -100,6 +103,7 @@ pub async fn forward(
             }
             Err(()) => {
                 upstream_peer.record_failure();
+                metrics::record_proxy_failure();
                 excluded.push(upstream_peer.addr.clone());
                 continue;
             }
@@ -130,11 +134,13 @@ async fn forward_once_with_incoming(
     let (parts, body) = req.into_parts();
     let boxed = body.map_err(|e| Box::new(e) as BoxError).boxed();
     let req2 = Request::from_parts(parts, boxed);
+    metrics::record_proxy_attempt();
     match forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx).await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             if (500..600).contains(&status) {
                 upstream_peer.record_failure();
+                metrics::record_proxy_failure();
             } else {
                 upstream_peer.record_success();
             }
@@ -142,6 +148,7 @@ async fn forward_once_with_incoming(
         }
         Err(()) => {
             upstream_peer.record_failure();
+            metrics::record_proxy_failure();
             text(502, "502 Bad Gateway\n")
         }
     }

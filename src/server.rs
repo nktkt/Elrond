@@ -18,7 +18,8 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::app::{ActionRt, LocationRt, ServerState};
-use crate::body::{text, ElrondBody};
+use crate::body::{full, text, ElrondBody};
+use crate::metrics;
 use crate::request_ctx::RequestCtx;
 use crate::template::Template;
 use crate::{proxy, static_files};
@@ -57,6 +58,7 @@ pub async fn run(
                     }
                 };
 
+                metrics::record_conn_accepted();
                 let state = state_rx.borrow().clone();
 
                 match tls_acceptor.clone() {
@@ -69,6 +71,7 @@ pub async fn run(
                         let conn = http1::Builder::new().serve_connection(io, service);
                         let watched = graceful.watch(conn);
                         tokio::spawn(async move {
+                            let _conn_guard = metrics::ConnGuard::new();
                             if let Err(e) = watched.await {
                                 debug!("connection from {peer} ended: {e}");
                             }
@@ -79,8 +82,10 @@ pub async fn run(
                         // accept loop is not stalled. After handshake we branch
                         // on ALPN: h2 → HTTP/2, otherwise → HTTP/1.1.
                         tokio::spawn(async move {
+                            let _conn_guard = metrics::ConnGuard::new();
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
+                                    metrics::record_tls_handshake_success();
                                     let alpn = tls_stream
                                         .get_ref()
                                         .1
@@ -112,6 +117,7 @@ pub async fn run(
                                     }
                                 }
                                 Err(e) => {
+                                    metrics::record_tls_handshake_failure();
                                     debug!("tls handshake from {peer} failed: {e}");
                                 }
                             }
@@ -177,6 +183,17 @@ async fn handle(
                         )
                         .await
                     }
+                    ActionRt::Metrics => {
+                        let body = metrics::render(crate::VERSION);
+                        Response::builder()
+                            .status(200)
+                            .header(
+                                "content-type",
+                                "text/plain; version=0.0.4; charset=utf-8",
+                            )
+                            .body(full(body))
+                            .expect("metrics response is well-formed")
+                    }
                 };
                 (resp, Some(loc))
             }
@@ -190,13 +207,15 @@ async fn handle(
         }
     }
 
+    let status = response.status().as_u16();
+    metrics::record_request(status);
     info!(
         target: "access",
         "{} \"{} {}\" {}",
         peer.ip(),
         method,
         path,
-        response.status().as_u16()
+        status
     );
     Ok(response)
 }

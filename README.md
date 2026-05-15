@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.7.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.8.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.7.0
+### What works in v0.8.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -38,6 +38,8 @@ change. See the [changelog](CHANGELOG.md) for what landed.
 - **Graceful `SIGHUP` reload** — validate new config, swap state on existing listeners, start
   new ones, drain removed ones; a broken new config never displaces a running config
 - Graceful shutdown on `SIGINT` / `SIGTERM` (stops accepting, drains in-flight requests)
+- **Prometheus `/metrics` endpoint** via the `metrics;` directive — requests, status classes,
+  proxy attempts/failures, TLS handshakes, active connections, uptime, build info
 
 **Not yet:** TLS/HTTP2/HTTP3, config hot-reload, caching, `stream` proxying, health checks.
 `listen ... ssl` is rejected rather than silently downgraded. Full list in the changelog.

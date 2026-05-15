@@ -65,6 +65,8 @@ pub enum ActionRt {
         root: PathBuf,
         kind: StaticKind,
     },
+    /// Render Prometheus metrics inline.
+    Metrics,
 }
 
 pub enum StaticKind {
@@ -308,6 +310,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                     balancer: resolve_proxy(target, &balancers),
                     set_headers: Arc::new(compile_headers(&loc.set_headers)?),
                 },
+                Action::Metrics => ActionRt::Metrics,
             };
             let location_rt = LocationRt {
                 path: loc.path.clone(),

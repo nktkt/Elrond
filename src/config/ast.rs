@@ -105,4 +105,6 @@ pub enum Action {
     ProxyPass { target: String },
     Root { dir: String },
     Alias { dir: String },
+    /// Expose Prometheus-format metrics at this location.
+    Metrics,
 }

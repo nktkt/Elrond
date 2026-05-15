@@ -275,6 +275,7 @@ fn build_location(
             "proxy_pass" => Some(Action::ProxyPass { target: arg1(d)? }),
             "root" => Some(Action::Root { dir: arg1(d)? }),
             "alias" => Some(Action::Alias { dir: arg1(d)? }),
+            "metrics" => Some(Action::Metrics),
             "proxy_set_header" => {
                 let name = arg1(d)?;
                 let value = d.args.get(1).cloned().unwrap_or_default();
