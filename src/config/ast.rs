@@ -1,13 +1,11 @@
 //! Typed configuration model produced by [`crate::config::build`].
-//!
-//! This is the validated, structured form of a configuration file — the
-//! runtime in [`crate::app`] is built directly from it.
 
 use std::net::SocketAddr;
 
+use crate::template::Template;
+
 #[derive(Debug, Default)]
 pub struct Config {
-    /// `worker_processes` — stored for reporting; v0.1.0 is single-process.
     pub worker_processes: Option<String>,
     pub pid: Option<String>,
     pub error_log: Option<String>,
@@ -37,20 +35,34 @@ pub struct UpstreamServer {
 pub struct Server {
     pub listen: Option<SocketAddr>,
     pub server_name: Option<String>,
+    /// Server-level `root`. Cascades into locations with no content directive.
+    pub root: Option<String>,
     pub locations: Vec<Location>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocationKind {
+    /// `location = /path` — exact equality, highest priority.
+    Exact,
+    /// `location /path` — longest-prefix-wins.
+    Prefix,
 }
 
 #[derive(Debug)]
 pub struct Location {
-    /// Prefix to match against the request path.
+    pub kind: LocationKind,
     pub path: String,
     pub action: Action,
+    /// Headers to set on the upstream request (`proxy_set_header`).
+    pub set_headers: Vec<(String, Template)>,
+    /// Headers to set on the outgoing response (`add_header`).
+    pub add_headers: Vec<(String, Template)>,
 }
 
-/// The content-producing directive of a `location` block.
 #[derive(Debug, Clone)]
 pub enum Action {
-    Return { status: u16, body: String },
+    Return { status: u16, body: Template },
     ProxyPass { target: String },
     Root { dir: String },
+    Alias { dir: String },
 }

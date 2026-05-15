@@ -10,17 +10,23 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.1.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.2.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.1.0
+### What works in v0.2.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
-- Prefix-based `location` routing (longest prefix wins)
-- `return` directive for inline responses
-- Static file serving via `root` — `index.html` fallback, MIME table, path-traversal protection
+- Routing: exact-match `location = /path` plus longest-prefix `location /path`
+- `include` directive (relative-path resolution, cycle detection)
+- **Variable engine** — `$host`, `$remote_addr`, `$request_uri`, `$uri`, `$request_method`,
+  `$args`, `$scheme`, `$server_name`, `$arg_*`, `$http_*`, `$cookie_*` — usable in `return`
+  bodies, `proxy_set_header`, and `add_header`
+- `return` directive for inline responses (with variables)
+- Static file serving via `root` and `alias` — `index.html` fallback, MIME table, path-traversal
+  protection, server-level `root` cascade
 - Reverse proxy (`proxy_pass`) to a direct address or a named `upstream`, with streaming bodies
+- `proxy_set_header` and `add_header` with full variable rendering
 - Weighted round-robin load balancing; `X-Real-IP` / `X-Forwarded-For` injection
 - Graceful shutdown on Ctrl-C (stops accepting, drains in-flight requests)
 

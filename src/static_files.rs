@@ -1,4 +1,4 @@
-//! Static file serving for the `root` directive.
+//! Static file serving for the `root` and `alias` directives.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -6,19 +6,32 @@ use hyper::Response;
 use tokio::fs;
 use tracing::debug;
 
+use crate::app::StaticKind;
 use crate::body::{full, text, ElrondBody};
 
 /// Serve `req_path` from `root`.
 ///
-/// Following Nginx semantics, the filesystem path is `root` joined with the
-/// full request path. Requests ending in `/` (or naming a directory) fall back
-/// to `index.html`. Paths containing `..` or other non-normal components are
-/// rejected with `403`.
-pub async fn serve(root: &Path, req_path: &str) -> Response<ElrondBody> {
-    let rel = req_path.trim_start_matches('/');
-    let rel_path = PathBuf::from(rel);
+/// - `StaticKind::Root` follows Nginx `root`: filesystem path = `root` + full
+///   request URI path.
+/// - `StaticKind::Alias { prefix }` follows Nginx `alias`: filesystem path =
+///   `root` + (URI path - location prefix).
+///
+/// Requests ending in `/` (or naming a directory) fall back to `index.html`.
+/// Paths containing `..` or other non-normal components are rejected `403`.
+pub async fn serve(
+    root: &Path,
+    kind: &StaticKind,
+    req_path: &str,
+) -> Response<ElrondBody> {
+    let rel = match kind {
+        StaticKind::Root => req_path.trim_start_matches('/').to_string(),
+        StaticKind::Alias { prefix } => {
+            let stripped = req_path.strip_prefix(prefix.as_str()).unwrap_or(req_path);
+            stripped.trim_start_matches('/').to_string()
+        }
+    };
 
-    // Reject anything that could escape `root`.
+    let rel_path = PathBuf::from(&rel);
     for component in rel_path.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
@@ -56,8 +69,6 @@ pub async fn serve(root: &Path, req_path: &str) -> Response<ElrondBody> {
     }
 }
 
-/// Map a file extension to a Content-Type. Unknown types fall back to
-/// `application/octet-stream`.
 fn mime_for(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" | "htm" => "text/html; charset=utf-8",

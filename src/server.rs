@@ -1,10 +1,11 @@
-//! The data plane: accept connections on a listener, route each request, and
-//! drain gracefully on shutdown.
+//! The data plane: accept connections on a listener, route each request,
+//! and drain gracefully on shutdown.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use hyper::body::Incoming;
+use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -14,12 +15,12 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::app::{ActionRt, SharedState};
+use crate::app::{ActionRt, HeaderList, SharedState};
 use crate::body::{text, ElrondBody};
+use crate::request_ctx::RequestCtx;
+use crate::template::Template;
 use crate::{proxy, static_files};
 
-/// Run one listener until `shutdown` flips to `true`, then drain in-flight
-/// connections before returning.
 pub async fn run(
     addr: SocketAddr,
     state: SharedState,
@@ -75,23 +76,60 @@ pub async fn run(
     Ok(())
 }
 
-/// Route a single request to its handler and emit an access-log line.
 async fn handle(
     state: SharedState,
     req: Request<Incoming>,
     peer: SocketAddr,
 ) -> Result<Response<ElrondBody>, Infallible> {
+    // Clone the small parts the template engine needs so the request body
+    // can still be moved into the proxy below.
     let method = req.method().clone();
-    let path = req.uri().path().to_string();
+    let uri = req.uri().clone();
+    let headers = req.headers().clone();
 
-    let response = match state.route(&path) {
-        Some(ActionRt::Return { status, body }) => text(*status, body.clone()),
-        Some(ActionRt::Static { root }) => static_files::serve(root, &path).await,
-        Some(ActionRt::Proxy(balancer)) => {
-            proxy::forward(balancer.clone(), req, peer).await
-        }
-        None => text(404, "404 Not Found\n"),
+    let ctx = RequestCtx {
+        peer,
+        server_name: state.server_name.as_deref(),
+        method: &method,
+        uri: &uri,
+        headers: &headers,
+        scheme: "http",
     };
+
+    let path = uri.path().to_string();
+
+    let (mut response, add_headers): (Response<ElrondBody>, Option<HeaderList>) =
+        match state.route(&path) {
+            Some(loc) => {
+                let resp = match &loc.action {
+                    ActionRt::Return { status, body } => {
+                        text(*status, body.render(&ctx))
+                    }
+                    ActionRt::Static { root, kind } => {
+                        static_files::serve(root, kind, &path).await
+                    }
+                    ActionRt::Proxy {
+                        balancer,
+                        set_headers,
+                    } => {
+                        proxy::forward(
+                            balancer.clone(),
+                            set_headers.clone(),
+                            req,
+                            peer,
+                            &ctx,
+                        )
+                        .await
+                    }
+                };
+                (resp, Some(loc.add_headers.clone()))
+            }
+            None => (text(404, "404 Not Found\n"), None),
+        };
+
+    if let Some(list) = add_headers {
+        apply_add_headers(response.headers_mut(), &list, &ctx);
+    }
 
     info!(
         target: "access",
@@ -102,4 +140,20 @@ async fn handle(
         response.status().as_u16()
     );
     Ok(response)
+}
+
+fn apply_add_headers(
+    target: &mut hyper::HeaderMap,
+    headers: &[(HeaderName, Template)],
+    ctx: &RequestCtx<'_>,
+) {
+    for (name, tmpl) in headers {
+        let value = tmpl.render(ctx);
+        match HeaderValue::from_str(&value) {
+            Ok(v) => {
+                target.insert(name, v);
+            }
+            Err(_) => debug!("add_header: invalid value for '{name}'"),
+        }
+    }
 }

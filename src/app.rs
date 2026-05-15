@@ -6,46 +6,69 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::config::{Action, Config};
+use hyper::header::HeaderName;
 
-/// Per-listener runtime state, shared across all connections on that listener.
+use crate::config::{Action, Config, LocationKind};
+use crate::template::Template;
+
 pub type SharedState = Arc<ServerState>;
+pub type HeaderList = Arc<Vec<(HeaderName, Template)>>;
 
-/// Everything needed to serve: one entry per `server` block.
 pub struct Runtime {
     pub servers: Vec<(SocketAddr, SharedState)>,
 }
 
 pub struct ServerState {
     pub server_name: Option<String>,
-    /// Locations sorted by prefix length, longest first.
-    locations: Vec<LocationRt>,
+    exact_locs: Vec<LocationRt>,
+    prefix_locs: Vec<LocationRt>,
 }
 
 impl ServerState {
-    /// Longest-prefix-wins routing. `/` acts as a catch-all.
-    pub fn route(&self, path: &str) -> Option<&ActionRt> {
-        self.locations
-            .iter()
-            .find(|l| l.prefix == "/" || path.starts_with(&l.prefix))
-            .map(|l| &l.action)
+    /// Nginx-style routing: exact matches first, then longest prefix.
+    pub fn route(&self, path: &str) -> Option<&LocationRt> {
+        for l in &self.exact_locs {
+            if l.path == path {
+                return Some(l);
+            }
+        }
+        for l in &self.prefix_locs {
+            if l.path == "/" || path.starts_with(&l.path) {
+                return Some(l);
+            }
+        }
+        None
     }
 }
 
-struct LocationRt {
-    prefix: String,
-    action: ActionRt,
+pub struct LocationRt {
+    pub path: String,
+    pub action: ActionRt,
+    pub add_headers: HeaderList,
 }
 
-/// Runtime form of a location's content directive.
 pub enum ActionRt {
-    Return { status: u16, body: String },
-    Proxy(Arc<Balancer>),
-    Static { root: PathBuf },
+    Return {
+        status: u16,
+        body: Template,
+    },
+    Proxy {
+        balancer: Arc<Balancer>,
+        set_headers: HeaderList,
+    },
+    Static {
+        root: PathBuf,
+        kind: StaticKind,
+    },
 }
 
-/// Round-robin selector over a set of upstream addresses. Weighting is encoded
-/// by repeating an address in `addrs` `weight` times.
+pub enum StaticKind {
+    /// Nginx `root`: filesystem path = root + full URI path.
+    Root,
+    /// Nginx `alias`: filesystem path = alias + (URI path - location prefix).
+    Alias { prefix: String },
+}
+
 pub struct Balancer {
     pub name: String,
     addrs: Vec<String>,
@@ -53,21 +76,18 @@ pub struct Balancer {
 }
 
 impl Balancer {
-    /// Pick the next upstream address in round-robin order.
     pub fn pick(&self) -> &str {
         let i = self.counter.fetch_add(1, Ordering::Relaxed);
         &self.addrs[i % self.addrs.len()]
     }
 }
 
-/// Lower a validated [`Config`] into a [`Runtime`].
 pub fn build(cfg: &Config) -> Result<Runtime, String> {
     let http = cfg
         .http
         .as_ref()
         .ok_or("config has no 'http' block; nothing to serve")?;
 
-    // Pre-build a balancer for every named upstream.
     let mut balancers: HashMap<String, Arc<Balancer>> = HashMap::new();
     for up in &http.upstreams {
         let mut addrs = Vec::new();
@@ -92,7 +112,9 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             .listen
             .ok_or("a 'server' block is missing its 'listen' directive")?;
 
-        let mut locations = Vec::with_capacity(s.locations.len());
+        let mut exact_locs: Vec<LocationRt> = Vec::new();
+        let mut prefix_locs: Vec<LocationRt> = Vec::new();
+
         for loc in &s.locations {
             let action = match &loc.action {
                 Action::Return { status, body } => ActionRt::Return {
@@ -101,24 +123,38 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 },
                 Action::Root { dir } => ActionRt::Static {
                     root: PathBuf::from(dir),
+                    kind: StaticKind::Root,
                 },
-                Action::ProxyPass { target } => {
-                    ActionRt::Proxy(resolve_proxy(target, &balancers))
-                }
+                Action::Alias { dir } => ActionRt::Static {
+                    root: PathBuf::from(dir),
+                    kind: StaticKind::Alias {
+                        prefix: loc.path.clone(),
+                    },
+                },
+                Action::ProxyPass { target } => ActionRt::Proxy {
+                    balancer: resolve_proxy(target, &balancers),
+                    set_headers: Arc::new(compile_headers(&loc.set_headers)?),
+                },
             };
-            locations.push(LocationRt {
-                prefix: loc.path.clone(),
+            let location_rt = LocationRt {
+                path: loc.path.clone(),
                 action,
-            });
+                add_headers: Arc::new(compile_headers(&loc.add_headers)?),
+            };
+            if loc.kind == LocationKind::Exact {
+                exact_locs.push(location_rt);
+            } else {
+                prefix_locs.push(location_rt);
+            }
         }
-        // Longest prefix first so `route` can return on the first match.
-        locations.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        prefix_locs.sort_by(|a, b| b.path.len().cmp(&a.path.len()));
 
         servers.push((
             addr,
             Arc::new(ServerState {
                 server_name: s.server_name.clone(),
-                locations,
+                exact_locs,
+                prefix_locs,
             }),
         ));
     }
@@ -129,8 +165,6 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
     Ok(Runtime { servers })
 }
 
-/// Resolve a `proxy_pass` target to a balancer: either a named upstream or a
-/// single direct address.
 fn resolve_proxy(
     target: &str,
     balancers: &HashMap<String, Arc<Balancer>>,
@@ -148,4 +182,17 @@ fn resolve_proxy(
         addrs: vec![host.to_string()],
         counter: AtomicUsize::new(0),
     })
+}
+
+fn compile_headers(
+    items: &[(String, Template)],
+) -> Result<Vec<(HeaderName, Template)>, String> {
+    items
+        .iter()
+        .map(|(name, tmpl)| {
+            HeaderName::try_from(name.as_str())
+                .map(|h| (h, tmpl.clone()))
+                .map_err(|e| format!("invalid header name '{name}': {e}"))
+        })
+        .collect()
 }

@@ -1,15 +1,13 @@
 //! Elrond — a Rust-native Nginx alternative.
-//!
-//! v0.1.0: Nginx-style config, an HTTP/1.1 server, prefix routing, static file
-//! serving, a reverse proxy with round-robin load balancing, and graceful
-//! shutdown.
 
 mod app;
 mod body;
 mod config;
 mod proxy;
+mod request_ctx;
 mod server;
 mod static_files;
+mod template;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -53,7 +51,6 @@ async fn main() -> ExitCode {
 
     init_tracing();
 
-    // Load and validate the configuration.
     let cfg = match config::load(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -80,10 +77,9 @@ async fn main() -> ExitCode {
 
     info!("elrond {VERSION} starting");
     if let Some(wp) = &cfg.worker_processes {
-        info!("worker_processes {wp} (v0.1.0 runs single-process, multi-threaded)");
+        info!("worker_processes {wp} (single-process, multi-threaded)");
     }
 
-    // Spawn one task per listener; they share a shutdown signal.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut handles = Vec::new();
     for (addr, state) in runtime.servers {
@@ -109,8 +105,6 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Initialize `tracing`. Verbosity is controlled by the `ELROND_LOG`
-/// environment variable (e.g. `ELROND_LOG=debug`); defaults to `info`.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_env("ELROND_LOG")
