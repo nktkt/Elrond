@@ -2,6 +2,38 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.12.0] - 2026-05-15
+
+**Documentation deliverable (cross-cutting docs track).** No code
+changes; 59 unit tests still pass. Pre-alpha.
+
+### Added
+
+- **[`docs/architecture.md`](docs/architecture.md)** — control plane /
+  data plane separation, where each piece of state lives, request
+  lifecycle from accept to access log, reload semantics, async / task
+  model.
+- **[`docs/compatibility.md`](docs/compatibility.md)** — directive-by-
+  directive matrix for main, `http`, `server`, `location`, `upstream`,
+  and `stream` contexts, plus the variable engine. Each entry is
+  tagged ✅ implemented / 🟡 parsed-but-ignored / ❌ rejected.
+- **[`docs/security-model.md`](docs/security-model.md)** — what Elrond
+  defends against today, what it does not, what is the deployer's
+  responsibility, and an explicit threat model summary.
+- **[`docs/migration-from-nginx.md`](docs/migration-from-nginx.md)** — a
+  procedure for moving an application from Nginx to Elrond, including a
+  line-by-line action table for the common config patterns and a
+  rollback discussion.
+- README now links the four documents.
+
+### Why this is its own version
+
+The cross-cutting "Documentation" track in
+[`ROADMAP.md`](ROADMAP.md) explicitly lists architecture,
+compatibility, security-model, and migration-guide docs. Bundling them
+behind a tagged version means the matrix in `compatibility.md` is
+unambiguous about which Elrond it describes.
+
 ## [0.11.0] - 2026-05-15
 
 **In-memory proxy cache MVP (Phase 9).** 59 unit tests. Pre-alpha.
@@ -558,6 +590,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.12.0]: https://github.com/nktkt/Elrond/releases/tag/v0.12.0
 [0.11.0]: https://github.com/nktkt/Elrond/releases/tag/v0.11.0
 [0.10.0]: https://github.com/nktkt/Elrond/releases/tag/v0.10.0
 [0.9.0]: https://github.com/nktkt/Elrond/releases/tag/v0.9.0

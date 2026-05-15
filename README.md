@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.11.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.12.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.11.0
+### What works in v0.12.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -143,6 +143,17 @@ http {
     }
 }
 ```
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — control plane / data plane separation, request
+  lifecycle, where each piece of state lives.
+- [`docs/compatibility.md`](docs/compatibility.md) — directive-by-directive Nginx compatibility
+  matrix: implemented, parsed-but-ignored, rejected.
+- [`docs/security-model.md`](docs/security-model.md) — what Elrond actively defends against and
+  what it leaves to the deployer.
+- [`docs/migration-from-nginx.md`](docs/migration-from-nginx.md) — procedure for swapping Elrond
+  in front of an application currently fronted by Nginx.
 
 ## Roadmap
 
