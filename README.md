@@ -120,6 +120,11 @@ http {
 
 ## Roadmap
 
+The table below is the short version — see [ROADMAP.md](ROADMAP.md) for the long form, including
+guiding principles, per-phase scope/non-scope, directive coverage, technical decisions, security
+focus, completion criteria, cross-cutting tracks (observability, security, benchmarking,
+documentation, platform), beyond-v1.0 ideas, non-goals, and the release-cadence mapping to v1.0.
+
 | Phase | Focus                                  |
 | ----- | -------------------------------------- |
 | 0     | Research, design, compatibility scope  |
