@@ -7,13 +7,15 @@ mod proxy;
 mod request_ctx;
 mod server;
 mod static_files;
+mod supervisor;
 mod template;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+use crate::supervisor::Supervisor;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -75,34 +77,74 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    info!("elrond {VERSION} starting");
+    info!("elrond {VERSION} starting (pid {})", std::process::id());
     if let Some(wp) = &cfg.worker_processes {
         info!("worker_processes {wp} (single-process, multi-threaded)");
     }
 
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let mut handles = Vec::new();
-    for (addr, state) in runtime.servers {
-        let rx = shutdown_rx.clone();
-        handles.push(tokio::spawn(async move {
-            if let Err(e) = server::run(addr, state, rx).await {
-                error!("listener on {addr} failed: {e}");
-            }
-        }));
-    }
-    drop(shutdown_rx);
+    let mut supervisor = match Supervisor::start(config_path.clone(), runtime).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("failed to start listeners: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    info!(
+        "elrond ready; {} listener(s); SIGHUP reloads config, SIGINT/SIGTERM shuts down",
+        supervisor.listener_count()
+    );
 
-    match tokio::signal::ctrl_c().await {
-        Ok(()) => info!("shutdown signal received; draining"),
-        Err(e) => error!("failed to listen for shutdown signal: {e}"),
-    }
-    let _ = shutdown_tx.send(true);
+    wait_for_signals(&mut supervisor).await;
 
-    for handle in handles {
-        let _ = handle.await;
-    }
+    info!("shutting down; draining listeners");
+    supervisor.shutdown().await;
     info!("elrond stopped");
     ExitCode::SUCCESS
+}
+
+#[cfg(unix)]
+async fn wait_for_signals(supervisor: &mut Supervisor) {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut hup = match signal(SignalKind::hangup()) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            warn!("could not install SIGHUP handler: {e}");
+            None
+        }
+    };
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            warn!("could not install SIGTERM handler: {e}");
+            None
+        }
+    };
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("SIGINT received");
+                break;
+            }
+            _ = async { term.as_mut().unwrap().recv().await }, if term.is_some() => {
+                info!("SIGTERM received");
+                break;
+            }
+            _ = async { hup.as_mut().unwrap().recv().await }, if hup.is_some() => {
+                info!("SIGHUP received");
+                supervisor.reload().await;
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_signals(_supervisor: &mut Supervisor) {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => info!("shutdown signal received"),
+        Err(e) => error!("failed to listen for shutdown signal: {e}"),
+    }
 }
 
 fn init_tracing() {
@@ -124,6 +166,10 @@ fn print_help() {
     println!("    -t, --test            Validate the configuration and exit");
     println!("    -v, --version         Print version and exit");
     println!("    -h, --help            Print this help and exit");
+    println!();
+    println!("SIGNALS (Unix):");
+    println!("    SIGHUP                Re-read the configuration file");
+    println!("    SIGINT, SIGTERM       Graceful shutdown");
     println!();
     println!("ENVIRONMENT:");
     println!("    ELROND_LOG            Log filter, e.g. 'info', 'debug' (default: info)");

@@ -2,6 +2,59 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.4.0] - 2026-05-15
+
+Graceful configuration reload (Phase 8). Pre-alpha; still no TLS.
+
+### Added
+
+- **`SIGHUP` reload.** Re-reads the configuration file, validates and builds
+  it in full *before* swapping anything live. Mirrors Nginx semantics:
+  - Listeners whose `listen` address is unchanged get the new state pushed
+    via an atomic `watch::channel`. In-flight connections finish on the old
+    state; brand-new connections on the same listener use the new state.
+  - `listen` addresses added in the new config become brand-new listeners.
+  - `listen` addresses removed from the new config are signaled to drain,
+    in-flight requests finish, then the listener stops.
+- **`SIGTERM` graceful shutdown** alongside the existing `SIGINT`.
+- **`Supervisor`** subsystem (`src/supervisor.rs`) owns the lifecycle of all
+  listeners. Each listener has its own state and shutdown `watch::Sender`,
+  joined to the supervisor.
+- Process-lifecycle log lines: PID at startup, signal received, listeners
+  added/removed during reload, drain status.
+
+### Changed
+
+- `server::run` now takes a `TcpListener` and a `watch::Receiver<Arc<ServerState>>`
+  instead of an owned state, so the supervisor can hand it new state without
+  reopening the socket.
+- `main.rs` slimmed down to argument parsing and signal handling; the lifecycle
+  work lives in `Supervisor`.
+
+### Behavior guarantees
+
+- A **broken** new config never displaces a running config. The reload error
+  is logged; the old listeners keep going.
+- A reload that adds a listener whose port is already in use logs the bind
+  error and continues with the rest of the configuration (the other
+  listeners still get their state swap).
+
+### Tests
+
+- 31 unit tests (unchanged from v0.3.0; the reload pathway is exercised by
+  the integration smoke test below — a proper integration-test harness
+  comes in a later release).
+- **Smoke-tested end-to-end:** `v1` → SIGHUP → `v2`; broken config + SIGHUP
+  → still `v2`; add `listen 8091` + SIGHUP → both 8090 and 8091 serve;
+  remove 8091 + SIGHUP → 8091 stops, 8090 serves `v4`; SIGTERM → clean
+  shutdown.
+
+### Still not implemented
+
+`SIGUSR1` log reopen (no log file output yet — tracing writes to stdout),
+`SIGUSR2` executable upgrade, TLS, HTTP/2/3, caching, `stream` proxying,
+active health checks, `proxy_next_upstream`. Roadmap unchanged.
+
 ## [0.3.0] - 2026-05-15
 
 Load balancing depth. **31 unit tests** (was 22). Pre-alpha; no TLS yet.
@@ -135,6 +188,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.4.0]: https://github.com/nktkt/Elrond/releases/tag/v0.4.0
 [0.3.0]: https://github.com/nktkt/Elrond/releases/tag/v0.3.0
 [0.2.0]: https://github.com/nktkt/Elrond/releases/tag/v0.2.0
 [0.1.0]: https://github.com/nktkt/Elrond/releases/tag/v0.1.0

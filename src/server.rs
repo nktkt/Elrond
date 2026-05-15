@@ -3,6 +3,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use hyper::body::Incoming;
 use hyper::header::{HeaderName, HeaderValue};
@@ -15,22 +16,29 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::app::{ActionRt, HeaderList, SharedState};
+use crate::app::{ActionRt, HeaderList, ServerState};
 use crate::body::{text, ElrondBody};
 use crate::request_ctx::RequestCtx;
 use crate::template::Template;
 use crate::{proxy, static_files};
 
+/// Run one listener until `shutdown` flips to `true`, then drain in-flight
+/// connections. Each new connection snapshots the current `state` from
+/// `state_rx`, so a reload that updates `state_rx` reaches new connections
+/// without disturbing in-flight ones.
 pub async fn run(
     addr: SocketAddr,
-    state: SharedState,
+    listener: TcpListener,
+    state_rx: watch::Receiver<Arc<ServerState>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    if let Some(name) = &state.server_name {
-        info!("listening on http://{addr} (server_name {name})");
-    } else {
-        info!("listening on http://{addr}");
+    {
+        let s = state_rx.borrow();
+        if let Some(name) = &s.server_name {
+            info!("listening on http://{addr} (server_name {name})");
+        } else {
+            info!("listening on http://{addr}");
+        }
     }
 
     let graceful = GracefulShutdown::new();
@@ -46,8 +54,8 @@ pub async fn run(
                     }
                 };
 
+                let state = state_rx.borrow().clone();
                 let io = TokioIo::new(stream);
-                let state = state.clone();
                 let service = service_fn(move |req| {
                     let state = state.clone();
                     async move { handle(state, req, peer).await }
@@ -77,12 +85,10 @@ pub async fn run(
 }
 
 async fn handle(
-    state: SharedState,
+    state: Arc<ServerState>,
     req: Request<Incoming>,
     peer: SocketAddr,
 ) -> Result<Response<ElrondBody>, Infallible> {
-    // Clone the small parts the template engine needs so the request body
-    // can still be moved into the proxy below.
     let method = req.method().clone();
     let uri = req.uri().clone();
     let headers = req.headers().clone();
