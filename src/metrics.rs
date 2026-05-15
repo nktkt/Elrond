@@ -25,6 +25,12 @@ static STREAM_ACCEPTED: AtomicU64 = AtomicU64::new(0);
 static STREAM_ACTIVE: AtomicU64 = AtomicU64::new(0);
 static STREAM_BYTES_TO_UP: AtomicU64 = AtomicU64::new(0);
 static STREAM_BYTES_FROM_UP: AtomicU64 = AtomicU64::new(0);
+static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static CACHE_BYPASS: AtomicU64 = AtomicU64::new(0);
+static CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
+static CACHE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static CACHE_EVICTED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -67,6 +73,25 @@ pub fn record_stream_accepted() {
 pub fn record_stream_bytes(to_upstream: u64, from_upstream: u64) {
     STREAM_BYTES_TO_UP.fetch_add(to_upstream, Ordering::Relaxed);
     STREAM_BYTES_FROM_UP.fetch_add(from_upstream, Ordering::Relaxed);
+}
+
+pub fn record_cache_hit() {
+    CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_cache_miss() {
+    CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_cache_bypass() {
+    CACHE_BYPASS.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_cache_evict(bytes: usize) {
+    CACHE_EVICTED_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+}
+pub fn set_cache_bytes(v: u64) {
+    CACHE_BYTES.store(v, Ordering::Relaxed);
+}
+pub fn set_cache_entries(v: u64) {
+    CACHE_ENTRIES.store(v, Ordering::Relaxed);
 }
 
 /// RAII guard for in-flight stream (TCP-proxy) connections.
@@ -162,6 +187,26 @@ pub fn render(version: &str) -> String {
             STREAM_BYTES_FROM_UP.load(Ordering::Relaxed),
             "Total bytes piped from stream upstreams back to clients.",
         ),
+        (
+            "elrond_cache_hits_total",
+            CACHE_HITS.load(Ordering::Relaxed),
+            "Proxy cache hits.",
+        ),
+        (
+            "elrond_cache_misses_total",
+            CACHE_MISSES.load(Ordering::Relaxed),
+            "Proxy cache misses.",
+        ),
+        (
+            "elrond_cache_bypass_total",
+            CACHE_BYPASS.load(Ordering::Relaxed),
+            "Proxy cache bypasses (safety guard tripped).",
+        ),
+        (
+            "elrond_cache_evicted_bytes_total",
+            CACHE_EVICTED_BYTES.load(Ordering::Relaxed),
+            "Bytes removed from the proxy cache through eviction or expiry.",
+        ),
     ];
     for (name, value, help) in counters {
         writeln!(out, "# HELP {name} {help}").ok();
@@ -215,6 +260,22 @@ pub fn render(version: &str) -> String {
         STREAM_ACTIVE.load(Ordering::Relaxed)
     )
     .ok();
+
+    writeln!(
+        out,
+        "# HELP elrond_cache_bytes Bytes currently held in the proxy cache."
+    )
+    .ok();
+    writeln!(out, "# TYPE elrond_cache_bytes gauge").ok();
+    writeln!(out, "elrond_cache_bytes {}", CACHE_BYTES.load(Ordering::Relaxed)).ok();
+
+    writeln!(
+        out,
+        "# HELP elrond_cache_entries Number of entries currently in the proxy cache."
+    )
+    .ok();
+    writeln!(out, "# TYPE elrond_cache_entries gauge").ok();
+    writeln!(out, "elrond_cache_entries {}", CACHE_ENTRIES.load(Ordering::Relaxed)).ok();
 
     out
 }

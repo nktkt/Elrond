@@ -174,10 +174,12 @@ async fn handle(
                     ActionRt::Proxy {
                         balancer,
                         set_headers,
+                        cache,
                     } => {
                         proxy::forward(
                             balancer.clone(),
                             set_headers.clone(),
+                            cache.clone(),
                             req,
                             peer,
                             &ctx,

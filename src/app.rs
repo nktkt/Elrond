@@ -71,6 +71,7 @@ pub enum ActionRt {
     Proxy {
         balancer: Arc<Balancer>,
         set_headers: HeaderList,
+        cache: Option<ProxyCache>,
     },
     Static {
         root: PathBuf,
@@ -78,6 +79,15 @@ pub enum ActionRt {
     },
     /// Render Prometheus metrics inline.
     Metrics,
+}
+
+/// Per-location proxy-cache configuration, resolved at config-build time.
+#[derive(Clone)]
+pub struct ProxyCache {
+    pub store: Arc<crate::cache::CacheStore>,
+    pub key_template: Template,
+    /// `(status codes (empty = any), ttl)` pairs.
+    pub valid_rules: Vec<(Vec<u16>, Duration)>,
 }
 
 pub enum StaticKind {
@@ -274,6 +284,15 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         .as_ref()
         .ok_or("config has no 'http' block; nothing to serve")?;
 
+    // Build cache zones.
+    let mut cache_zones: HashMap<String, Arc<crate::cache::CacheStore>> = HashMap::new();
+    for z in &http.cache_zones {
+        cache_zones.insert(
+            z.name.clone(),
+            crate::cache::CacheStore::new(z.name.clone(), z.max_bytes),
+        );
+    }
+
     let mut balancers: HashMap<String, Arc<Balancer>> = HashMap::new();
     for up in &http.upstreams {
         let peers: Vec<Arc<Peer>> = up
@@ -329,10 +348,33 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                         prefix: loc.path.clone(),
                     },
                 },
-                Action::ProxyPass { target } => ActionRt::Proxy {
-                    balancer: resolve_proxy(target, &balancers),
-                    set_headers: Arc::new(compile_headers(&loc.set_headers)?),
-                },
+                Action::ProxyPass { target } => {
+                    let cache = if let Some(zone_name) = &loc.proxy_cache {
+                        let store = cache_zones.get(zone_name).cloned().ok_or_else(|| {
+                            format!(
+                                "location uses proxy_cache '{}' but no proxy_cache_path \
+                                 declares that zone",
+                                zone_name
+                            )
+                        })?;
+                        let key_template = loc
+                            .proxy_cache_key
+                            .clone()
+                            .unwrap_or_else(|| Template::parse("$scheme$host$request_uri"));
+                        Some(ProxyCache {
+                            store,
+                            key_template,
+                            valid_rules: loc.proxy_cache_valid.clone(),
+                        })
+                    } else {
+                        None
+                    };
+                    ActionRt::Proxy {
+                        balancer: resolve_proxy(target, &balancers),
+                        set_headers: Arc::new(compile_headers(&loc.set_headers)?),
+                        cache,
+                    }
+                }
                 Action::Metrics => ActionRt::Metrics,
             };
             let location_rt = LocationRt {

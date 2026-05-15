@@ -32,6 +32,14 @@ pub struct Http {
     pub access_log: Option<String>,
     pub upstreams: Vec<Upstream>,
     pub servers: Vec<Server>,
+    /// `proxy_cache_path … keys_zone=NAME:SIZE …;` zone declarations.
+    pub cache_zones: Vec<CacheZone>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheZone {
+    pub name: String,
+    pub max_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -119,6 +127,14 @@ pub struct Location {
     /// Per-location `gzip on|off;` override. `None` falls back to the
     /// server-level setting.
     pub gzip: Option<bool>,
+    /// `proxy_cache <zone_name>;` — enables caching for this location.
+    pub proxy_cache: Option<String>,
+    /// `proxy_cache_key <template>;` — defaults to
+    /// `$scheme$proxy_host$request_uri` when caching is enabled.
+    pub proxy_cache_key: Option<Template>,
+    /// One entry per `proxy_cache_valid` directive: `(status codes, ttl)`.
+    /// An empty `codes` list means "any status".
+    pub proxy_cache_valid: Vec<(Vec<u16>, Duration)>,
 }
 
 #[derive(Debug, Clone)]

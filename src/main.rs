@@ -2,6 +2,7 @@
 
 mod app;
 mod body;
+mod cache;
 mod config;
 mod gzip;
 mod http_date;

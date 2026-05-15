@@ -2,6 +2,78 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.11.0] - 2026-05-15
+
+**In-memory proxy cache MVP (Phase 9).** 59 unit tests. Pre-alpha.
+
+Honest MVP: in-memory, single-zone semantics, with strict safety guards
+in front of every insertion. The goal is to land caching *correctly*
+first and grow toward Nginx parity.
+
+### Added
+
+- **`proxy_cache_path /path keys_zone=NAME:SIZE …;`** at http level.
+  Other arguments (`levels=`, `inactive=`, `max_size=`, etc.) are parsed
+  and accepted for forward compatibility but unused — v0.11.0 keeps
+  everything in memory.
+- **`proxy_cache <zone>;`** at location level.
+- **`proxy_cache_key <template>;`** with variable interpolation. Default
+  is `$scheme$host$request_uri`.
+- **`proxy_cache_valid [code|any]… <duration>;`**, repeatable.
+- **`X-Cache: HIT|MISS|BYPASS`** on every proxied response, so operators
+  can grep for it.
+- **Cache metrics** in `/metrics`:
+  - `elrond_cache_hits_total`
+  - `elrond_cache_misses_total`
+  - `elrond_cache_bypass_total`
+  - `elrond_cache_evicted_bytes_total`
+  - `elrond_cache_bytes` (gauge)
+  - `elrond_cache_entries` (gauge)
+- Eviction: when an insertion would exceed `keys_zone` size, the
+  soonest-to-expire entries are dropped until there's room. Bytes
+  removed are reported via `elrond_cache_evicted_bytes_total`.
+
+### Safety guards
+
+A response is **never** cached when any of these hold (`X-Cache: BYPASS`
+is emitted):
+
+- Request method is not `GET`.
+- Response has `Set-Cookie`.
+- Response has any `Vary` header (Vary-aware variants are a follow-up).
+- Response has `Cache-Control: no-store`, `private`, or `no-cache`.
+- Response status does not match any `proxy_cache_valid` rule.
+- Response body exceeds 4 MiB.
+
+### Tests
+
+- 59 unit tests (was 50). Added 9 cache tests covering: non-GET bypass,
+  `Set-Cookie` bypass, `Vary` bypass, `Cache-Control: no-store` bypass,
+  missing-valid-rule bypass, matching-status storage, store roundtrip,
+  expired-on-read eviction, full-store eviction.
+- **Smoke-tested end-to-end** against a counter backend:
+  - First `GET /items` → `X-Cache: MISS`, counter=1, body stored.
+  - Second `GET /items` → `X-Cache: HIT`, counter=1 (backend not hit).
+  - Different URI `GET /other` → `X-Cache: MISS`, counter=2.
+  - `/metrics` reported `hits=1, misses=2, entries=2, bytes=226`.
+
+### Known limitations carried forward
+
+- **No Vary-aware variants.** A response with `Vary` is bypassed entirely
+  rather than cached per-variant.
+- **No conditional revalidation** (`If-Modified-Since` / `If-None-Match`
+  on cache fills). An entry expires when its TTL ends; we don't yet ask
+  the upstream "still valid?"
+- **No `proxy_cache_lock`.** Concurrent misses against the same key
+  cause multiple upstream fills.
+- **No `stale-while-revalidate` / `stale-if-error`.** Expired entries are
+  not served while we re-fetch.
+- **No disk persistence.** A restart loses the cache.
+- **No purge endpoint.**
+- **No range-aware caching.**
+
+These are all known and on the roadmap.
+
 ## [0.10.0] - 2026-05-15
 
 **On-the-fly gzip compression.** 50 unit tests. Pre-alpha.
@@ -486,6 +558,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.11.0]: https://github.com/nktkt/Elrond/releases/tag/v0.11.0
 [0.10.0]: https://github.com/nktkt/Elrond/releases/tag/v0.10.0
 [0.9.0]: https://github.com/nktkt/Elrond/releases/tag/v0.9.0
 [0.8.0]: https://github.com/nktkt/Elrond/releases/tag/v0.8.0

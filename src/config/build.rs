@@ -47,6 +47,10 @@ fn build_http(dirs: &[Directive]) -> Result<Http, String> {
                 http.upstreams.push(build_upstream(name, expect_block(d)?, d.line)?);
             }
             "server" => http.servers.push(build_server(expect_block(d)?)?),
+            "proxy_cache_path" => {
+                let zone = parse_cache_path(&d.args, d.line)?;
+                http.cache_zones.push(zone);
+            }
             "include" => {}
             "error_log" | "sendfile" | "tcp_nopush" | "tcp_nodelay"
             | "keepalive_timeout" | "types_hash_max_size" | "default_type"
@@ -343,6 +347,9 @@ fn build_location(
     let mut add_headers = Vec::new();
     let mut expires: Option<std::time::Duration> = None;
     let mut gzip: Option<bool> = None;
+    let mut proxy_cache: Option<String> = None;
+    let mut proxy_cache_key: Option<Template> = None;
+    let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
 
     for d in dirs {
         let candidate = match d.name.as_str() {
@@ -386,6 +393,22 @@ fn build_location(
                 gzip = Some(parse_on_off(d.args.first().map(String::as_str), d.line)?);
                 None
             }
+            "proxy_cache" => {
+                proxy_cache = Some(arg1(d)?);
+                None
+            }
+            "proxy_cache_key" => {
+                proxy_cache_key = Some(Template::parse(&arg1(d)?));
+                None
+            }
+            "proxy_cache_valid" => {
+                let rule = parse_cache_valid(&d.args, d.line)?;
+                proxy_cache_valid.push(rule);
+                None
+            }
+            "proxy_cache_bypass" | "proxy_no_cache" | "proxy_cache_lock"
+            | "proxy_cache_use_stale" | "proxy_cache_revalidate"
+            | "proxy_cache_methods" | "proxy_cache_min_uses" => None,
             "include" => None,
             "index" | "try_files" | "autoindex"
             | "proxy_buffering" | "proxy_read_timeout"
@@ -431,6 +454,89 @@ fn build_location(
         add_headers,
         expires,
         gzip,
+        proxy_cache,
+        proxy_cache_key,
+        proxy_cache_valid,
+    })
+}
+
+/// Parse a `proxy_cache_path` directive. v0.11.0 needs only the
+/// `keys_zone=NAME:SIZE` pair; other arguments (levels, inactive, …) are
+/// recognized but ignored.
+fn parse_cache_path(
+    args: &[String],
+    line: usize,
+) -> Result<CacheZone, String> {
+    if args.is_empty() {
+        return Err(format!(
+            "line {line}: 'proxy_cache_path' requires arguments (e.g. 'proxy_cache_path /var/cache keys_zone=app:10m')"
+        ));
+    }
+    let mut zone: Option<CacheZone> = None;
+    for a in args {
+        if let Some(spec) = a.strip_prefix("keys_zone=") {
+            let (name, size) = spec
+                .split_once(':')
+                .ok_or_else(|| format!("line {line}: keys_zone must be NAME:SIZE"))?;
+            let max_bytes = parse_size(size).ok_or_else(|| {
+                format!("line {line}: invalid keys_zone size '{size}'")
+            })?;
+            zone = Some(CacheZone {
+                name: name.to_string(),
+                max_bytes,
+            });
+        }
+        // `levels=`, `max_size=`, `inactive=`, `use_temp_path=`, `loader_*=` …
+        // are silently accepted for forward compatibility.
+    }
+    zone.ok_or_else(|| {
+        format!("line {line}: 'proxy_cache_path' needs 'keys_zone=NAME:SIZE'")
+    })
+}
+
+/// `proxy_cache_valid [code | any]... <duration>;`
+fn parse_cache_valid(
+    args: &[String],
+    line: usize,
+) -> Result<(Vec<u16>, std::time::Duration), String> {
+    if args.is_empty() {
+        return Err(format!(
+            "line {line}: 'proxy_cache_valid' requires a duration argument"
+        ));
+    }
+    let (last, head) = args.split_last().unwrap();
+    let ttl = parse_duration(last).ok_or_else(|| {
+        format!("line {line}: invalid duration '{last}' in proxy_cache_valid")
+    })?;
+    let mut codes = Vec::new();
+    for c in head {
+        if c == "any" {
+            // Empty Vec means "any status" downstream.
+            return Ok((Vec::new(), ttl));
+        }
+        let code: u16 = c.parse().map_err(|_| {
+            format!("line {line}: invalid status code '{c}' in proxy_cache_valid")
+        })?;
+        codes.push(code);
+    }
+    Ok((codes, ttl))
+}
+
+/// Parse Nginx-style sizes: `10m`, `1g`, `512k`, or a bare byte count.
+fn parse_size(s: &str) -> Option<usize> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<usize>() {
+        return Some(n);
+    }
+    let (num, unit) = s
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| s.split_at(i))?;
+    let n: usize = num.parse().ok()?;
+    Some(match unit.to_ascii_lowercase().as_str() {
+        "k" => n * 1024,
+        "m" => n * 1024 * 1024,
+        "g" => n * 1024 * 1024 * 1024,
+        _ => return None,
     })
 }
 

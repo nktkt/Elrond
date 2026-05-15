@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.10.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.11.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.10.0
+### What works in v0.11.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -45,6 +45,10 @@ change. See the [changelog](CHANGELOG.md) for what landed.
 - **On-the-fly gzip** — `gzip on;` + `gzip_types`; correct `Vary: Accept-Encoding`; respects
   client `Accept-Encoding`; static and `return` responses (proxied bodies stream and are not yet
   compressed)
+- **In-memory proxy cache** — `proxy_cache_path keys_zone=NAME:SIZE;` + `proxy_cache`,
+  `proxy_cache_key`, `proxy_cache_valid`. `X-Cache: HIT|MISS|BYPASS` on every proxied response.
+  Strict safety guards: `Set-Cookie`, `Vary`, `Cache-Control: no-store/private/no-cache`,
+  non-GET, body>4 MiB → BYPASS
 
 **Not yet:** TLS/HTTP2/HTTP3, config hot-reload, caching, `stream` proxying, health checks.
 `listen ... ssl` is rejected rather than silently downgraded. Full list in the changelog.

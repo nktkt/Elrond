@@ -17,8 +17,11 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use tracing::{debug, warn};
 
-use crate::app::{Balancer, HeaderList, Peer};
-use crate::body::{text, BoxError, ElrondBody};
+use std::time::Instant;
+
+use crate::app::{Balancer, HeaderList, Peer, ProxyCache};
+use crate::body::{full, text, BoxError, ElrondBody};
+use crate::cache::{self, CacheDecision, Entry};
 use crate::metrics;
 use crate::request_ctx::RequestCtx;
 
@@ -54,6 +57,7 @@ fn client() -> &'static Client<HttpConnector, ElrondBody> {
 pub async fn forward(
     balancer: Arc<Balancer>,
     set_headers: HeaderList,
+    cache: Option<ProxyCache>,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
@@ -63,11 +67,28 @@ pub async fn forward(
         Method::GET | Method::HEAD | Method::OPTIONS | Method::DELETE
     );
 
+    // Try the cache before any upstream selection. Only GET is consultable.
+    if let (Some(c), &Method::GET) = (&cache, req.method()) {
+        let key = c.key_template.render(ctx);
+        if let Some(entry) = c.store.get(&key) {
+            return cached_response(entry);
+        }
+    }
+
     if !retry_safe {
-        return forward_once_with_incoming(balancer, set_headers, req, client_peer, ctx).await;
+        return forward_once_with_incoming(
+            balancer,
+            set_headers,
+            cache,
+            req,
+            client_peer,
+            ctx,
+        )
+        .await;
     }
 
     let (parts, _body) = req.into_parts();
+    let method = parts.method.clone();
     let max = MAX_ATTEMPTS.min(balancer.peers.len().max(1));
     let mut excluded: Vec<String> = Vec::new();
     let mut last: Option<Response<ElrondBody>> = None;
@@ -99,7 +120,7 @@ pub async fn forward(
                     continue;
                 }
                 upstream_peer.record_success();
-                return resp;
+                return maybe_cache(resp, cache.as_ref(), &method, ctx).await;
             }
             Err(()) => {
                 upstream_peer.record_failure();
@@ -118,10 +139,12 @@ pub async fn forward(
 async fn forward_once_with_incoming(
     balancer: Arc<Balancer>,
     set_headers: HeaderList,
+    cache: Option<ProxyCache>,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
+    let _ = cache; // never-cache path (non-GET); kept for symmetry
     let upstream_peer = match balancer.pick(ctx) {
         Some(p) => p,
         None => {
@@ -216,6 +239,82 @@ fn empty_body() -> ElrondBody {
     Empty::<Bytes>::new()
         .map_err(|n: Infallible| match n {})
         .boxed()
+}
+
+/// Serve a cached response. Attaches an `X-Cache: HIT` header.
+fn cached_response(entry: Entry) -> Response<ElrondBody> {
+    let mut b = Response::builder().status(entry.status);
+    for (n, v) in &entry.headers {
+        b = b.header(n, v);
+    }
+    b = b.header("x-cache", "HIT");
+    b.body(full(entry.body))
+        .expect("cached response is well-formed")
+}
+
+/// If the location has a cache and the response is cacheable, buffer the
+/// body and store it. Returns the response (possibly with `X-Cache: MISS`
+/// / `X-Cache: BYPASS`). Non-cached responses still get an `X-Cache` header
+/// so operators can grep for misses.
+async fn maybe_cache(
+    resp: Response<ElrondBody>,
+    cache: Option<&ProxyCache>,
+    method: &Method,
+    ctx: &RequestCtx<'_>,
+) -> Response<ElrondBody> {
+    let Some(c) = cache else {
+        return resp;
+    };
+    if *method != Method::GET {
+        return mark_cache(resp, "BYPASS");
+    }
+
+    let (parts, body) = resp.into_parts();
+    let collected = match body.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            return Response::from_parts(parts, full(bytes::Bytes::new()));
+        }
+    };
+
+    let decision = cache::decide_caching(
+        method,
+        &parts.headers,
+        parts.status.as_u16(),
+        collected.len(),
+        &c.valid_rules,
+    );
+    match decision {
+        CacheDecision::Bypass(_) => {
+            metrics::record_cache_bypass();
+            let resp = Response::from_parts(parts, full(collected));
+            mark_cache(resp, "BYPASS")
+        }
+        CacheDecision::Store(ttl) => {
+            let key = c.key_template.render(ctx);
+            let header_pairs: Vec<(HeaderName, HeaderValue)> = parts
+                .headers
+                .iter()
+                .map(|(n, v)| (n.clone(), v.clone()))
+                .collect();
+            let entry = Entry {
+                status: parts.status.as_u16(),
+                headers: header_pairs,
+                body: collected.clone(),
+                expires_at: Instant::now() + ttl,
+            };
+            c.store.put(key, entry);
+            let resp = Response::from_parts(parts, full(collected));
+            mark_cache(resp, "MISS")
+        }
+    }
+}
+
+fn mark_cache(mut resp: Response<ElrondBody>, label: &'static str) -> Response<ElrondBody> {
+    if let Ok(v) = HeaderValue::from_str(label) {
+        resp.headers_mut().insert("x-cache", v);
+    }
+    resp
 }
 
 fn add_forwarding_headers(headers: &mut hyper::HeaderMap, peer: SocketAddr) {
