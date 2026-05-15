@@ -17,6 +17,7 @@ pub fn build(dirs: &[Directive]) -> Result<Config, String> {
             "error_log" => cfg.error_log = Some(arg1(d)?),
             "events" => { /* parsed for compatibility; ignored in v0.2.0 */ }
             "http" => cfg.http = Some(build_http(expect_block(d)?)?),
+            "stream" => cfg.stream = Some(build_stream(expect_block(d)?)?),
             // Includes should already be expanded by `crate::config::mod`,
             // but tolerate stray ones so `parse_str` (no file context) still
             // accepts configs that name them.
@@ -126,6 +127,76 @@ fn build_upstream(
         method,
         servers,
     })
+}
+
+fn build_stream(dirs: &[Directive]) -> Result<Stream, String> {
+    let mut stream = Stream::default();
+    for d in dirs {
+        match d.name.as_str() {
+            "upstream" => {
+                let name = arg1(d)?;
+                stream
+                    .upstreams
+                    .push(build_upstream(name, expect_block(d)?, d.line)?);
+            }
+            "server" => stream
+                .servers
+                .push(build_stream_server(expect_block(d)?)?),
+            "include" => {}
+            // Stream-context directives we accept for forward compatibility.
+            "access_log" | "error_log" | "log_format" | "proxy_timeout"
+            | "proxy_connect_timeout" | "tcp_nodelay" | "resolver" => {}
+            other => {
+                return Err(format!(
+                    "line {}: unknown directive '{other}' in stream context",
+                    d.line
+                ))
+            }
+        }
+    }
+    Ok(stream)
+}
+
+fn build_stream_server(dirs: &[Directive]) -> Result<StreamServer, String> {
+    let mut server = StreamServer::default();
+    for d in dirs {
+        match d.name.as_str() {
+            "listen" => {
+                let a = arg1(d)?;
+                if d.args.iter().any(|x| x == "ssl") {
+                    return Err(format!(
+                        "line {}: 'listen ... ssl' in a stream server (TLS \
+                         pass-through / termination) is not supported yet",
+                        d.line
+                    ));
+                }
+                if d.args.iter().any(|x| x == "udp") {
+                    return Err(format!(
+                        "line {}: 'listen ... udp' is not supported yet \
+                         (UDP stream proxying is on the roadmap)",
+                        d.line
+                    ));
+                }
+                server.listen = Some(parse_listen(&a, d.line)?);
+            }
+            "proxy_pass" => server.proxy_pass = Some(arg1(d)?),
+            "include" => {}
+            "proxy_timeout" | "proxy_connect_timeout" | "tcp_nodelay" => {}
+            other => {
+                return Err(format!(
+                    "line {}: unknown directive '{other}' in stream server context",
+                    d.line
+                ))
+            }
+        }
+    }
+    if server.listen.is_none() {
+        return Err("a stream 'server' block is missing its 'listen' directive".into());
+    }
+    if server.proxy_pass.is_none() {
+        return Err("a stream 'server' block is missing 'proxy_pass'".into());
+    }
+    Ok(server)
 }
 
 /// Parse Nginx-style time values: `10s`, `500ms`, `1m`, `2h`, `1d`, or a bare

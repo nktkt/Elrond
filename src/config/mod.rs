@@ -346,6 +346,61 @@ mod tests {
     }
 
     #[test]
+    fn stream_block_parses() {
+        let cfg = parse_str(
+            r#"stream {
+                upstream db {
+                    server 127.0.0.1:5432 weight=2;
+                    server 127.0.0.1:5433;
+                }
+                server { listen 15432; proxy_pass db; }
+            }"#,
+        )
+        .unwrap();
+        let s = cfg.stream.unwrap();
+        assert_eq!(s.upstreams.len(), 1);
+        assert_eq!(s.upstreams[0].servers.len(), 2);
+        assert_eq!(s.servers.len(), 1);
+        assert_eq!(s.servers[0].proxy_pass.as_deref(), Some("db"));
+    }
+
+    #[test]
+    fn stream_server_requires_listen_and_proxy_pass() {
+        let err =
+            parse_str("stream { server { listen 5000; } }").unwrap_err();
+        assert!(err.contains("proxy_pass"), "got: {err}");
+        let err = parse_str("stream { server { proxy_pass x; } }").unwrap_err();
+        assert!(err.contains("listen"), "got: {err}");
+    }
+
+    #[test]
+    fn stream_rejects_udp_for_now() {
+        let err = parse_str(
+            "stream { server { listen 5000 udp; proxy_pass dns; } }",
+        )
+        .unwrap_err();
+        assert!(err.contains("udp"), "got: {err}");
+    }
+
+    #[test]
+    fn http_and_stream_coexist() {
+        let cfg = parse_str(
+            r#"
+            http {
+                server { listen 8080; location / { return 200; } }
+            }
+            stream {
+                upstream db { server 127.0.0.1:5432; }
+                server { listen 15432; proxy_pass db; }
+            }
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.http.is_some());
+        assert!(cfg.stream.is_some());
+    }
+
+    #[test]
     fn include_expansion_via_load() {
         use std::io::Write;
         let tmp = std::env::temp_dir().join(format!("elrond-test-{}", std::process::id()));

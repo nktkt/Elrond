@@ -1,7 +1,7 @@
 //! Runtime model: the validated [`Config`] lowered into ready-to-serve state.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -17,9 +17,11 @@ pub type SharedState = Arc<ServerState>;
 pub type HeaderList = Arc<Vec<(HeaderName, Template)>>;
 
 pub struct Runtime {
-    /// One entry per `server` block. The optional `rustls::ServerConfig`
+    /// One entry per HTTP `server` block. The optional `rustls::ServerConfig`
     /// signals that the listener should terminate TLS.
     pub servers: Vec<(SocketAddr, SharedState, Option<Arc<rustls::ServerConfig>>)>,
+    /// One entry per `stream` `server` block — TCP proxying.
+    pub stream_servers: Vec<(SocketAddr, Arc<Balancer>)>,
 }
 
 pub struct ServerState {
@@ -151,18 +153,30 @@ pub struct Balancer {
 }
 
 impl Balancer {
-    /// Pick one available peer for this request, or `None` if every peer is
-    /// down or in a fail cooldown.
+    /// HTTP entry point: pick using the request context (for `ip_hash`).
     pub fn pick(&self, ctx: &RequestCtx<'_>) -> Option<Arc<Peer>> {
-        self.pick_excluding(ctx, &[])
+        self.pick_inner(ctx.peer.ip(), &[])
     }
 
-    /// Like [`Balancer::pick`], but skip peers whose address appears in
-    /// `exclude`. Used by `proxy_next_upstream` retry to avoid re-picking the
-    /// peer that just failed.
+    /// HTTP retry entry point: pick excluding peers that already failed for
+    /// this request.
     pub fn pick_excluding(
         &self,
         ctx: &RequestCtx<'_>,
+        exclude: &[String],
+    ) -> Option<Arc<Peer>> {
+        self.pick_inner(ctx.peer.ip(), exclude)
+    }
+
+    /// Stream entry point: pick using only the client's IP address (no HTTP
+    /// request context exists).
+    pub fn pick_for_addr(&self, client_ip: IpAddr) -> Option<Arc<Peer>> {
+        self.pick_inner(client_ip, &[])
+    }
+
+    fn pick_inner(
+        &self,
+        client_ip: IpAddr,
         exclude: &[String],
     ) -> Option<Arc<Peer>> {
         let now = now_ms();
@@ -192,7 +206,7 @@ impl Balancer {
         match self.method {
             LbMethod::RoundRobin => self.pick_weighted_rr(&pool),
             LbMethod::LeastConn => self.pick_least_conn(&pool),
-            LbMethod::IpHash => self.pick_ip_hash(&pool, ctx),
+            LbMethod::IpHash => self.pick_ip_hash(&pool, client_ip),
         }
     }
 
@@ -227,12 +241,12 @@ impl Balancer {
     fn pick_ip_hash(
         &self,
         pool: &[&Arc<Peer>],
-        ctx: &RequestCtx<'_>,
+        client_ip: IpAddr,
     ) -> Option<Arc<Peer>> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
-        ctx.peer.ip().hash(&mut hasher);
+        client_ip.hash(&mut hasher);
         let idx = (hasher.finish() as usize) % pool.len();
         Some(pool[idx].clone())
     }
@@ -354,10 +368,57 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         ));
     }
 
-    if servers.is_empty() {
-        return Err("config has no 'server' blocks".into());
+    // Build stream listeners.
+    let mut stream_servers: Vec<(SocketAddr, Arc<Balancer>)> = Vec::new();
+    if let Some(stream) = &cfg.stream {
+        let mut stream_balancers: HashMap<String, Arc<Balancer>> = HashMap::new();
+        for up in &stream.upstreams {
+            let peers: Vec<Arc<Peer>> = up
+                .servers
+                .iter()
+                .map(|s| {
+                    Arc::new(Peer {
+                        addr: s.addr.clone(),
+                        weight: s.weight,
+                        max_fails: s.max_fails,
+                        fail_timeout: s.fail_timeout,
+                        backup: s.backup,
+                        down: s.down,
+                        in_flight: AtomicU32::new(0),
+                        consecutive_failures: AtomicU32::new(0),
+                        failed_until_ms: AtomicU64::new(0),
+                    })
+                })
+                .collect();
+            stream_balancers.insert(
+                up.name.clone(),
+                Arc::new(Balancer {
+                    name: up.name.clone(),
+                    method: up.method,
+                    peers,
+                    rr_counter: AtomicUsize::new(0),
+                }),
+            );
+        }
+        for s in &stream.servers {
+            let addr = s
+                .listen
+                .ok_or("a stream 'server' is missing 'listen'")?;
+            let target = s
+                .proxy_pass
+                .as_ref()
+                .ok_or("a stream 'server' is missing 'proxy_pass'")?;
+            stream_servers.push((addr, resolve_proxy(target, &stream_balancers)));
+        }
     }
-    Ok(Runtime { servers })
+
+    if servers.is_empty() && stream_servers.is_empty() {
+        return Err("config has no 'server' blocks (http or stream)".into());
+    }
+    Ok(Runtime {
+        servers,
+        stream_servers,
+    })
 }
 
 /// `proxy_pass <target>` — look up `target` as an upstream name, or treat it

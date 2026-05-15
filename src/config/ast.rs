@@ -11,6 +11,20 @@ pub struct Config {
     pub pid: Option<String>,
     pub error_log: Option<String>,
     pub http: Option<Http>,
+    pub stream: Option<Stream>,
+}
+
+/// Top-level `stream { … }` block — TCP/UDP proxying. v0.9.0 implements TCP.
+#[derive(Debug, Default)]
+pub struct Stream {
+    pub upstreams: Vec<Upstream>,
+    pub servers: Vec<StreamServer>,
+}
+
+#[derive(Debug, Default)]
+pub struct StreamServer {
+    pub listen: Option<SocketAddr>,
+    pub proxy_pass: Option<String>,
 }
 
 #[derive(Debug, Default)]

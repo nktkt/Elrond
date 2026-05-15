@@ -2,6 +2,63 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.9.0] - 2026-05-15
+
+**TCP `stream` proxy (Phase 10).** 46 unit tests. Pre-alpha.
+
+### Added
+
+- **`stream { … }` top-level block.** Parallel to `http`, with its own
+  `upstream` and `server` sections. Reuses the same `Balancer` /
+  `Peer` health machinery as HTTP.
+  ```nginx
+  stream {
+      upstream db {
+          server 127.0.0.1:5432 weight=2;
+          server 127.0.0.1:5433;
+      }
+      server { listen 15432; proxy_pass db; }
+  }
+  ```
+- **TCP forwarding** via `tokio::io::copy_bidirectional`. Bytes flow in
+  both directions until either side closes.
+- **All existing LB algorithms apply to stream traffic** — weighted
+  round-robin, `least_conn`, `ip_hash` (keyed on the client's IP).
+- **Passive health** carries over: `max_fails` / `fail_timeout` /
+  `backup` / `down` work for stream peers exactly as for HTTP peers.
+- **Supervisor now manages both kinds of listeners.** SIGHUP reload
+  swaps both per-server HTTP state and per-stream-listener balancer
+  atomically via separate `watch::channel`s; new stream addresses are
+  bound, removed ones drain.
+- **Stream metrics** in `/metrics`:
+  - `elrond_stream_connections_accepted_total`
+  - `elrond_stream_active_connections` (gauge, RAII guard)
+  - `elrond_stream_bytes_client_to_upstream_total`
+  - `elrond_stream_bytes_upstream_to_client_total`
+- `Balancer::pick_for_addr(IpAddr)` API so the stream layer can pick a
+  peer without an HTTP request context.
+
+### Tests
+
+- 46 unit tests (4 new): stream block parsing, stream server requiring
+  both `listen` and `proxy_pass`, UDP rejection with a clear message,
+  HTTP and stream coexisting in one config.
+- **Smoke-tested end-to-end:** 9 TCP connections to a 2-backend pool
+  with `weight=2`, `weight=1` produced exactly 6/3 distribution.
+  Bidirectional bytes flowed through (`45` in / `189` out).
+  `/metrics` reflected stream traffic accurately.
+  HTTP and stream listeners coexisted in one process.
+
+### Known limitations
+
+- **TCP only.** `listen ... udp;` is parsed but explicitly rejected.
+- No PROXY protocol (in or out).
+- No SNI-based TCP routing for opaque TLS pass-through.
+- Stream listeners are not yet enrolled in `GracefulShutdown` — drain
+  signals new connections, but in-flight bidirectional copies finish
+  on their own. Bounded by upstream connection lifetime.
+- Stream metrics are global, not labeled per `upstream`.
+
 ## [0.8.0] - 2026-05-15
 
 **Prometheus `/metrics` endpoint (observability cross-cut).** 42 unit tests.
@@ -384,6 +441,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.9.0]: https://github.com/nktkt/Elrond/releases/tag/v0.9.0
 [0.8.0]: https://github.com/nktkt/Elrond/releases/tag/v0.8.0
 [0.7.0]: https://github.com/nktkt/Elrond/releases/tag/v0.7.0
 [0.6.0]: https://github.com/nktkt/Elrond/releases/tag/v0.6.0

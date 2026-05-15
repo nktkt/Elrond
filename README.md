@@ -10,10 +10,10 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.8.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
+🚧 **v0.9.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
 change. See the [changelog](CHANGELOG.md) for what landed.
 
-### What works in v0.8.0
+### What works in v0.9.0
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
@@ -39,7 +39,9 @@ change. See the [changelog](CHANGELOG.md) for what landed.
   new ones, drain removed ones; a broken new config never displaces a running config
 - Graceful shutdown on `SIGINT` / `SIGTERM` (stops accepting, drains in-flight requests)
 - **Prometheus `/metrics` endpoint** via the `metrics;` directive — requests, status classes,
-  proxy attempts/failures, TLS handshakes, active connections, uptime, build info
+  proxy attempts/failures, TLS handshakes, active connections, uptime, build info, stream stats
+- **TCP `stream` proxy** — top-level `stream { upstream … server { listen X; proxy_pass Y; } }`,
+  reusing the same balancer / passive-health / `ip_hash` / `least_conn` machinery as HTTP
 
 **Not yet:** TLS/HTTP2/HTTP3, config hot-reload, caching, `stream` proxying, health checks.
 `listen ... ssl` is rejected rather than silently downgraded. Full list in the changelog.

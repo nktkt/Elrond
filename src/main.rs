@@ -9,6 +9,7 @@ mod proxy;
 mod request_ctx;
 mod server;
 mod static_files;
+mod stream;
 mod supervisor;
 mod template;
 mod tls;

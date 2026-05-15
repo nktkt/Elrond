@@ -21,6 +21,10 @@ static PROXY_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static PROXY_FAILURES: AtomicU64 = AtomicU64::new(0);
 static TLS_OK: AtomicU64 = AtomicU64::new(0);
 static TLS_FAIL: AtomicU64 = AtomicU64::new(0);
+static STREAM_ACCEPTED: AtomicU64 = AtomicU64::new(0);
+static STREAM_ACTIVE: AtomicU64 = AtomicU64::new(0);
+static STREAM_BYTES_TO_UP: AtomicU64 = AtomicU64::new(0);
+static STREAM_BYTES_FROM_UP: AtomicU64 = AtomicU64::new(0);
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -56,6 +60,29 @@ pub fn record_tls_handshake_success() {
 }
 pub fn record_tls_handshake_failure() {
     TLS_FAIL.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_stream_accepted() {
+    STREAM_ACCEPTED.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_stream_bytes(to_upstream: u64, from_upstream: u64) {
+    STREAM_BYTES_TO_UP.fetch_add(to_upstream, Ordering::Relaxed);
+    STREAM_BYTES_FROM_UP.fetch_add(from_upstream, Ordering::Relaxed);
+}
+
+/// RAII guard for in-flight stream (TCP-proxy) connections.
+pub struct StreamConnGuard;
+
+impl StreamConnGuard {
+    pub fn new() -> Self {
+        STREAM_ACTIVE.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for StreamConnGuard {
+    fn drop(&mut self) {
+        STREAM_ACTIVE.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// RAII guard that increments the active-connection gauge on construction
@@ -120,6 +147,21 @@ pub fn render(version: &str) -> String {
             TLS_FAIL.load(Ordering::Relaxed),
             "Failed TLS handshakes.",
         ),
+        (
+            "elrond_stream_connections_accepted_total",
+            STREAM_ACCEPTED.load(Ordering::Relaxed),
+            "Total TCP stream connections accepted.",
+        ),
+        (
+            "elrond_stream_bytes_client_to_upstream_total",
+            STREAM_BYTES_TO_UP.load(Ordering::Relaxed),
+            "Total bytes piped from stream clients to upstreams.",
+        ),
+        (
+            "elrond_stream_bytes_upstream_to_client_total",
+            STREAM_BYTES_FROM_UP.load(Ordering::Relaxed),
+            "Total bytes piped from stream upstreams back to clients.",
+        ),
     ];
     for (name, value, help) in counters {
         writeln!(out, "# HELP {name} {help}").ok();
@@ -158,6 +200,19 @@ pub fn render(version: &str) -> String {
         out,
         "elrond_active_connections {}",
         ACTIVE_CONNS.load(Ordering::Relaxed)
+    )
+    .ok();
+
+    writeln!(
+        out,
+        "# HELP elrond_stream_active_connections Currently open stream (TCP) connections."
+    )
+    .ok();
+    writeln!(out, "# TYPE elrond_stream_active_connections gauge").ok();
+    writeln!(
+        out,
+        "elrond_stream_active_connections {}",
+        STREAM_ACTIVE.load(Ordering::Relaxed)
     )
     .ok();
 
