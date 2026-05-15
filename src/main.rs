@@ -6,6 +6,7 @@ mod body;
 mod cache;
 mod config;
 mod gzip;
+mod health;
 mod http_date;
 mod limit;
 mod metrics;

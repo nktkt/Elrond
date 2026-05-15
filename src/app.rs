@@ -357,15 +357,16 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 })
             })
             .collect();
-        balancers.insert(
-            up.name.clone(),
-            Arc::new(Balancer {
-                name: up.name.clone(),
-                method: up.method,
-                peers,
-                rr_counter: AtomicUsize::new(0),
-            }),
-        );
+        let balancer = Arc::new(Balancer {
+            name: up.name.clone(),
+            method: up.method,
+            peers,
+            rr_counter: AtomicUsize::new(0),
+        });
+        if let Some(hc) = &up.health_check {
+            crate::health::start(&balancer, hc.clone());
+        }
+        balancers.insert(up.name.clone(), balancer);
     }
 
     let mut servers = Vec::new();

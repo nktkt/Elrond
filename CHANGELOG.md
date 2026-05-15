@@ -2,6 +2,52 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.19.0] - 2026-05-15
+
+**Active upstream health checks** (Phase 5 closure). 71 unit tests.
+Pre-alpha.
+
+### Added
+
+- **`health_check`** directive in `upstream` context. Options:
+  - `uri=/path` (default `/`)
+  - `interval=Ns` (default 5s)
+  - `timeout=Ns` (default 2s)
+  - `fails=N` / `passes=N` (reserved for richer transitions; today the
+    existing `max_fails` / `fail_timeout` state machine handles the
+    transitions)
+  - `match=<status>` (default 200)
+- **Background probe task per `upstream`** that GETs each non-`down`
+  peer at the configured interval, with a timeout, and reports the
+  outcome through `Peer::record_success` / `record_failure`. Active
+  and passive health share the *same* health-state machine, so the
+  failure cooldown and recovery behave the same regardless of which
+  signal triggered them.
+- **Task lifecycle.** The probe holds a `Weak<Balancer>` and exits on
+  its next tick when the balancer is dropped — no JoinHandle
+  bookkeeping required, reload-safe.
+
+### Verified end-to-end
+
+Two backends `A` (5001) and `B` (5002) with
+`health_check uri=/health interval=500ms timeout=1s`:
+
+```
+baseline:                3× A, 3× B
+touch /tmp/A.unhealthy:  0× A, 6× B   (probe took A out of rotation)
+rm   /tmp/A.unhealthy:   3× A, 3× B   (probe brought A back in)
+```
+
+### Known follow-ups
+
+- `fails` / `passes` are parsed but not yet wired into a richer
+  multi-strike state machine — we lean on the existing
+  `max_fails` / `fail_timeout` for now.
+- No per-peer probe metrics yet (probe outcomes are reflected in the
+  general passive-health counters but not split out).
+- The probe uses a separate HTTP client from the proxy hot path —
+  small extra memory, simpler isolation.
+
 ## [0.18.0] - 2026-05-15
 
 **Concurrent-connection limiting (`limit_conn`).** 71 unit tests.
@@ -857,6 +903,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.19.0]: https://github.com/nktkt/Elrond/releases/tag/v0.19.0
 [0.18.0]: https://github.com/nktkt/Elrond/releases/tag/v0.18.0
 [0.17.0]: https://github.com/nktkt/Elrond/releases/tag/v0.17.0
 [0.16.0]: https://github.com/nktkt/Elrond/releases/tag/v0.16.0

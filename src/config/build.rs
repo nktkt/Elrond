@@ -82,6 +82,7 @@ fn build_upstream(
 ) -> Result<Upstream, String> {
     let mut servers = Vec::new();
     let mut method = LbMethod::RoundRobin;
+    let mut health_check: Option<HealthCheckCfg> = None;
 
     for d in dirs {
         match d.name.as_str() {
@@ -122,6 +123,9 @@ fn build_upstream(
             "least_conn" => method = LbMethod::LeastConn,
             "ip_hash" => method = LbMethod::IpHash,
             "hash" | "keepalive" | "zone" => { /* accepted; not yet used */ }
+            "health_check" => {
+                health_check = Some(parse_health_check(&d.args, d.line)?);
+            }
             other => {
                 return Err(format!(
                     "line {}: unknown directive '{other}' in upstream context",
@@ -138,7 +142,40 @@ fn build_upstream(
         name,
         method,
         servers,
+        health_check,
     })
+}
+
+/// Parse `health_check uri=/path interval=10s fails=2 passes=2 timeout=2s match=200;`
+/// All arguments optional; missing values fall back to `HealthCheckCfg::default()`.
+fn parse_health_check(args: &[String], line: usize) -> Result<HealthCheckCfg, String> {
+    let mut hc = HealthCheckCfg::default();
+    for a in args {
+        if let Some(v) = a.strip_prefix("uri=") {
+            hc.uri = v.to_string();
+        } else if let Some(v) = a.strip_prefix("interval=") {
+            hc.interval = parse_duration(v).ok_or_else(|| {
+                format!("line {line}: invalid health_check interval '{v}'")
+            })?;
+        } else if let Some(v) = a.strip_prefix("timeout=") {
+            hc.timeout = parse_duration(v).ok_or_else(|| {
+                format!("line {line}: invalid health_check timeout '{v}'")
+            })?;
+        } else if let Some(v) = a.strip_prefix("fails=") {
+            hc.fails = v
+                .parse()
+                .map_err(|_| format!("line {line}: invalid health_check fails '{v}'"))?;
+        } else if let Some(v) = a.strip_prefix("passes=") {
+            hc.passes = v
+                .parse()
+                .map_err(|_| format!("line {line}: invalid health_check passes '{v}'"))?;
+        } else if let Some(v) = a.strip_prefix("match=") {
+            hc.expected_status = v.parse().map_err(|_| {
+                format!("line {line}: invalid health_check match status '{v}'")
+            })?;
+        }
+    }
+    Ok(hc)
 }
 
 fn build_stream(dirs: &[Directive]) -> Result<Stream, String> {

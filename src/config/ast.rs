@@ -66,6 +66,32 @@ pub struct Upstream {
     pub name: String,
     pub method: LbMethod,
     pub servers: Vec<UpstreamServer>,
+    /// Active health-check probe configuration. `None` disables active
+    /// checks (only passive `max_fails`/`fail_timeout` applies).
+    pub health_check: Option<HealthCheckCfg>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HealthCheckCfg {
+    pub uri: String,
+    pub interval: Duration,
+    pub timeout: Duration,
+    pub fails: u32,
+    pub passes: u32,
+    pub expected_status: u16,
+}
+
+impl Default for HealthCheckCfg {
+    fn default() -> Self {
+        HealthCheckCfg {
+            uri: "/".into(),
+            interval: Duration::from_secs(5),
+            timeout: Duration::from_secs(2),
+            fails: 2,
+            passes: 2,
+            expected_status: 200,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
