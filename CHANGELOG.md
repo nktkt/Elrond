@@ -2,6 +2,60 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.40.0] - 2026-05-16
+
+**Production hardening.** 83 unit tests (80 + 3 new). Pre-alpha.
+
+Closes the last "operationally awkward to run" gaps that were
+keeping Elrond from being usable in real production deployments:
+running as root, bringing your own container image, and CI.
+
+### Added
+
+- **`user <name> [<group>];`** — Unix privilege drop. Elrond binds
+  privileged ports as root, writes the PID file, then drops to the
+  named user via `initgroups` → `setgid` → `setuid`. Refuses to
+  silently keep root if the drop fails (operator footgun
+  prevention). Warns at startup if running as root with no `user`
+  set.
+- **`worker_rlimit_nofile <N>;`** — soft `RLIMIT_NOFILE` is raised
+  before sockets bind (clamped to the existing hard cap, since
+  only root can lift the hard limit).
+- **`Dockerfile`** — multi-stage build (rust:slim → debian-slim),
+  drops to an in-image `elrond` user via the bundled default
+  config, exposes 8080/tcp + 8443/tcp + 8443/udp, signals via tini.
+- **`.github/workflows/ci.yml`** — build + test + version smoke +
+  `-t` validation, matrix on ubuntu-latest and macos-latest.
+- **`.github/workflows/docker.yml`** — on `v*.*.*` tag, builds and
+  pushes multi-arch (linux/amd64 + linux/arm64) image to GHCR with
+  semver tags.
+- **`PRODUCTION.md`** — operator runbook: deployment shapes,
+  privilege model, reload semantics, observability, sizing,
+  troubleshooting, capacity smoke test, and outstanding caveats.
+- **`src/privilege.rs`** — small `#[cfg(unix)]` module with
+  `resolve`, `drop_to`, `raise_nofile`, `is_root`. Three unit
+  tests covering the "user not found" / "group not found" / "rlimit
+  doesn't panic on absurd targets" contracts.
+- New `libc = "0.2"` dependency (Unix-only, via
+  `[target.'cfg(unix)'.dependencies]`).
+
+### Verified
+
+- `user nobody;` from a non-root process → resolves correctly,
+  attempts the drop, fails with `EPERM`, refuses to keep running.
+  Logs the failing syscall + errno verbatim.
+- No `user` directive + non-root → boots normally, serves traffic.
+- `worker_rlimit_nofile 65536;` → detects when the soft limit is
+  already at or above the request and skips the syscall.
+- `cargo test --bin elrond` → 83/83 passing.
+
+### Known limitations carried forward
+
+- HTTP/3 cert hot-reload on `SIGHUP` still pending (TCP TLS does
+  hot-reload). Operators must restart for h3 cert rotation.
+- No ACME, no OCSP stapling, no OpenTelemetry exporter, no on-disk
+  cache persistence. All documented in PRODUCTION.md §8.
+
 ## [0.39.0] - 2026-05-16
 
 **Auto-`Alt-Svc` advertisement for HTTP/3.** 80 unit tests. Pre-alpha.
@@ -1919,6 +1973,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.40.0]: https://github.com/nktkt/Elrond/releases/tag/v0.40.0
 [0.39.0]: https://github.com/nktkt/Elrond/releases/tag/v0.39.0
 [0.38.0]: https://github.com/nktkt/Elrond/releases/tag/v0.38.0
 [0.37.0]: https://github.com/nktkt/Elrond/releases/tag/v0.37.0

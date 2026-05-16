@@ -15,6 +15,8 @@ mod limit;
 mod logging;
 mod metrics;
 mod mirror;
+#[cfg(unix)]
+mod privilege;
 mod proxy;
 mod request_ctx;
 #[cfg(unix)]
@@ -137,6 +139,45 @@ async fn main() -> ExitCode {
         info!("worker_processes {wp} (single-process, multi-threaded)");
     }
 
+    // Raise RLIMIT_NOFILE *before* binding sockets so a high-fanout
+    // listener doesn't run into EMFILE the moment traffic arrives.
+    // Only root can lift the *hard* cap; non-root processes silently
+    // clamp to the existing hard limit, which is the same behavior
+    // Nginx ships.
+    #[cfg(unix)]
+    if let Some(target) = cfg.worker_rlimit_nofile {
+        match privilege::raise_nofile(target) {
+            Ok((old, new)) if old == new => {
+                info!(
+                    "worker_rlimit_nofile {target}: already at soft limit {old} \
+                     (hard cap reached or higher than request)"
+                );
+            }
+            Ok((old, new)) => {
+                info!("worker_rlimit_nofile: raised soft limit {old} → {new}");
+            }
+            Err(e) => warn!("worker_rlimit_nofile: {e} (continuing)"),
+        }
+    }
+
+    // Resolve the drop-target user *before* `Supervisor::start` so
+    // misconfigurations fail fast — better to error out before binding
+    // anything than to find out we can't drop after the listeners are
+    // up and the PID file is written.
+    #[cfg(unix)]
+    let drop_target = if let Some(user) = &cfg.user {
+        match privilege::resolve(user, cfg.group.as_deref()) {
+            Ok(ids) => Some(ids),
+            Err(e) => {
+                error!("'user' directive: {e}");
+                cleanup_pid_file(pid_path.as_deref());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+
     let mut supervisor = match Supervisor::start(config_path.clone(), runtime).await {
         Ok(s) => s,
         Err(e) => {
@@ -145,6 +186,38 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Drop privileges *after* sockets are bound (so :80/:443 worked
+    // while we were root) and *after* the PID file is written (so the
+    // PID file lives at its intended ownership). Log files are already
+    // open via inherited file descriptors and survive the drop.
+    #[cfg(unix)]
+    if let Some(ids) = drop_target.as_ref() {
+        let was_root = privilege::is_root();
+        match privilege::drop_to(ids) {
+            Ok(()) => info!(
+                "dropped privileges to uid={} gid={} (was root: {was_root})",
+                ids.uid, ids.gid
+            ),
+            Err(e) => {
+                error!(
+                    "could not drop privileges to uid={} gid={}: {e}",
+                    ids.uid, ids.gid
+                );
+                // Refuse to keep running as a privileged process when
+                // the operator explicitly asked for a non-root identity.
+                supervisor.shutdown().await;
+                cleanup_pid_file(pid_path.as_deref());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if privilege::is_root() {
+        warn!(
+            "running as root and no 'user' directive set — \
+             consider 'user nobody;' (or run as a non-root user) for production"
+        );
+    }
+
     info!(
         "elrond ready; {} listener(s); SIGHUP reloads config, \
          SIGUSR1 reopens logs, SIGINT/SIGTERM shuts down",

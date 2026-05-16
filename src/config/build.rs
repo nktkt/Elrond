@@ -22,7 +22,28 @@ pub fn build(dirs: &[Directive]) -> Result<Config, String> {
             // but tolerate stray ones so `parse_str` (no file context) still
             // accepts configs that name them.
             "include" => {}
-            "user" | "worker_rlimit_nofile" | "load_module" | "daemon"
+            "user" => {
+                if d.args.is_empty() {
+                    return Err(format!(
+                        "line {}: 'user' requires at least a user name",
+                        d.line
+                    ));
+                }
+                cfg.user = Some(d.args[0].clone());
+                if d.args.len() >= 2 {
+                    cfg.group = Some(d.args[1].clone());
+                }
+            }
+            "worker_rlimit_nofile" => {
+                let n: u64 = arg1(d)?.parse().map_err(|_| {
+                    format!(
+                        "line {}: 'worker_rlimit_nofile' expects an integer",
+                        d.line
+                    )
+                })?;
+                cfg.worker_rlimit_nofile = Some(n);
+            }
+            "load_module" | "daemon"
             | "master_process" | "worker_shutdown_timeout" => {}
             other => {
                 return Err(format!(

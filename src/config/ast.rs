@@ -10,6 +10,19 @@ pub struct Config {
     pub worker_processes: Option<String>,
     pub pid: Option<String>,
     pub error_log: Option<String>,
+    /// `user <name> [<group>];` — Unix user (and optional group) to drop
+    /// to **after** binding sockets and writing the PID file. Lets
+    /// Elrond bind `:80`/`:443` as root and then run unprivileged.
+    /// `None` keeps the invoking user (suitable for non-privileged
+    /// development, or under systemd `User=` / capabilities).
+    pub user: Option<String>,
+    /// `user <name> <group>;` — explicit group. When `None` and `user`
+    /// is set, falls back to the user's primary group from /etc/passwd.
+    pub group: Option<String>,
+    /// `worker_rlimit_nofile <N>;` — soft limit to set for open file
+    /// descriptors. Raised before privileges are dropped (only root
+    /// can raise the hard cap).
+    pub worker_rlimit_nofile: Option<u64>,
     pub http: Option<Http>,
     pub stream: Option<Stream>,
 }

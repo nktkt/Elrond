@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  test:
+    name: build + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build
+        run: cargo build --release --bin elrond
+
+      - name: cargo test
+        run: cargo test --bin elrond -- --nocapture
+
+      - name: cargo clippy (warn only — informational on first pass)
+        run: cargo clippy --bin elrond -- -W clippy::all || true
+
+      - name: --version smoke
+        run: ./target/release/elrond --version
+
+      - name: -t config validation smoke
+        run: ./target/release/elrond -t -c elrond.conf
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # Informational only — we don't enforce the rustfmt default style
+      # uniformly across the codebase yet.
+      - run: cargo fmt --all -- --check || true
