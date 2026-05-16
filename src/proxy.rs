@@ -110,9 +110,11 @@ pub async fn forward(
     );
 
     // Try the cache before any upstream selection. Only GET is consultable.
+    // Vary-aware: pass the client's request headers so the variant that
+    // matches the right Accept-Encoding / Authorization / … is selected.
     if let (Some(c), &Method::GET) = (&cache, req.method()) {
         let key = c.key_template.render(ctx);
-        if let Some(entry) = c.store.get(&key) {
+        if let Some(entry) = c.store.get(&key, req.headers()) {
             return cached_response(entry);
         }
     }
@@ -130,6 +132,9 @@ pub async fn forward(
         .await;
     }
 
+    // Capture headers before consuming `req` for the retry loop; the cache
+    // path needs them to build the response's vary signature.
+    let captured_headers = req.headers().clone();
     let (parts, _body) = req.into_parts();
     let method = parts.method.clone();
     let max = MAX_ATTEMPTS.min(balancer.peers.len().max(1));
@@ -167,7 +172,7 @@ pub async fn forward(
                     continue;
                 }
                 upstream_peer.record_success();
-                return maybe_cache(resp, cache.as_ref(), &method, ctx).await;
+                return maybe_cache(resp, cache.as_ref(), &method, ctx, &captured_headers).await;
             }
             Err(()) => {
                 upstream_peer.record_failure();
@@ -202,6 +207,7 @@ async fn forward_once_with_incoming(
     };
     let _guard = upstream_peer.enter();
 
+    let _captured_headers = req.headers().clone();
     let (parts, body) = req.into_parts();
     let boxed = body.map_err(|e| Box::new(e) as BoxError).boxed();
     let req2 = Request::from_parts(parts, boxed);
@@ -317,6 +323,7 @@ async fn maybe_cache(
     cache: Option<&ProxyCache>,
     method: &Method,
     ctx: &RequestCtx<'_>,
+    req_headers: &hyper::HeaderMap,
 ) -> Response<ElrondBody> {
     let Some(c) = cache else {
         return resp;
@@ -353,11 +360,16 @@ async fn maybe_cache(
                 .iter()
                 .map(|(n, v)| (n.clone(), v.clone()))
                 .collect();
+            let vary_headers = cache::parse_vary(&parts.headers);
+            let vary_signature =
+                cache::build_signature(req_headers, &vary_headers);
             let entry = Entry {
                 status: parts.status.as_u16(),
                 headers: header_pairs,
                 body: collected.clone(),
                 expires_at: Instant::now() + ttl,
+                vary_headers,
+                vary_signature,
             };
             c.store.put(key, entry);
             let resp = Response::from_parts(parts, full(collected));

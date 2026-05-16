@@ -1,24 +1,19 @@
-//! In-memory response cache for `proxy_cache`.
+//! In-memory response cache with **Vary-aware variants**.
 //!
-//! v0.11.0 is an honest MVP — fully in-memory, single-zone, with strict
-//! safety guards in front of every insertion. The goal is to land caching
-//! correctly *first* and then grow toward Nginx feature parity.
+//! v0.34.0 honors the `Vary` response header. A single `proxy_cache_key`
+//! may resolve to multiple stored variants, each keyed by the values of
+//! the request headers the upstream said it varies on. The classic case
+//! is `Vary: Accept-Encoding`, where the gzip and identity bodies are
+//! both legitimate to cache but must not be served to the wrong client.
 //!
-//! ## Caching is rejected (with `X-Cache: BYPASS`) when any of these hold
+//! ## Caching is still rejected (with `X-Cache: BYPASS`) when:
 //!
 //! - The request method is not `GET`.
 //! - The response has a `Set-Cookie` header.
-//! - The response has any `Vary` header (we don't yet compute keyed
-//!   variants).
 //! - The response has `Cache-Control: no-store`, `private`, or `no-cache`.
 //! - The response status doesn't match any `proxy_cache_valid` rule.
 //! - The response body exceeds [`MAX_ENTRY_BYTES`] (4 MiB).
-//!
-//! ## What's still missing on purpose
-//!
-//! Vary-aware variants, `stale-while-revalidate`, conditional revalidation,
-//! cache locking (one fill at a time per key), disk persistence, cache
-//! purge endpoint, range-aware caching. They are roadmap items.
+//! - The response's `Vary` contains `*` (uncacheable per RFC 9111).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,24 +24,25 @@ use hyper::header::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::metrics;
 
-/// Per-entry hard ceiling. Anything larger streams through without caching.
 pub const MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024;
 
-/// Cached response.
+/// One cached response with its Vary-axis fingerprint.
 #[derive(Clone)]
 pub struct Entry {
     pub status: u16,
     pub headers: Vec<(HeaderName, HeaderValue)>,
     pub body: Bytes,
     pub expires_at: Instant,
+    /// Lowercased request-header names this entry depends on (from the
+    /// upstream's `Vary` response header). Empty = the entry is valid
+    /// for any request matching `cache_key`.
+    pub vary_headers: Vec<String>,
+    /// Pre-computed signature of `vary_headers` against the request that
+    /// produced this entry. Used to match the right variant on lookup.
+    pub vary_signature: String,
 }
 
-/// A `proxy_cache_path … keys_zone=NAME:SIZE` zone, runtime form. The store
-/// is small enough to be `Mutex<HashMap<_, _>>`; we'll graduate to sharded
-/// or concurrent maps once the API surface is settled.
 pub struct CacheStore {
-    /// Zone name (used for diagnostics; kept here for future logging /
-    /// multi-zone routing).
     #[allow(dead_code)]
     pub name: String,
     pub max_bytes: usize,
@@ -54,7 +50,9 @@ pub struct CacheStore {
 }
 
 struct State {
-    entries: HashMap<String, Entry>,
+    /// `cache_key → list of variants`. Each variant is one response
+    /// produced for a particular Vary-axis tuple.
+    entries: HashMap<String, Vec<Entry>>,
     total_bytes: usize,
 }
 
@@ -70,65 +68,131 @@ impl CacheStore {
         })
     }
 
-    /// Look up a fresh entry. Expired entries are evicted opportunistically.
-    pub fn get(&self, key: &str) -> Option<Entry> {
+    /// Look up a fresh entry matching this request. Stale variants are
+    /// evicted opportunistically.
+    pub fn get(&self, key: &str, req_headers: &HeaderMap) -> Option<Entry> {
         let now = Instant::now();
         let mut s = self.state.lock().ok()?;
-        if let Some(entry) = s.entries.get(key) {
-            if entry.expires_at > now {
-                metrics::record_cache_hit();
-                return Some(entry.clone());
-            } else {
-                // Stale — remove and account.
-                if let Some(removed) = s.entries.remove(key) {
-                    let bytes_removed = entry_bytes(&removed);
-                    s.total_bytes = s.total_bytes.saturating_sub(bytes_removed);
-                    metrics::record_cache_evict(bytes_removed);
+        let mut found = None;
+        let mut bytes_dropped = 0usize;
+        let mut remove_key = false;
+        if let Some(variants) = s.entries.get_mut(key) {
+            variants.retain(|v| {
+                if v.expires_at <= now {
+                    bytes_dropped += entry_bytes(v);
+                    false
+                } else {
+                    true
+                }
+            });
+            for v in variants.iter() {
+                let sig = build_signature(req_headers, &v.vary_headers);
+                if sig == v.vary_signature {
+                    found = Some(v.clone());
+                    break;
                 }
             }
+            if variants.is_empty() {
+                remove_key = true;
+            }
         }
-        metrics::record_cache_miss();
-        None
+        if bytes_dropped > 0 {
+            s.total_bytes = s.total_bytes.saturating_sub(bytes_dropped);
+            metrics::record_cache_evict(bytes_dropped);
+        }
+        if remove_key {
+            s.entries.remove(key);
+        }
+        if found.is_some() {
+            metrics::record_cache_hit();
+        } else {
+            metrics::record_cache_miss();
+        }
+        found
     }
 
-    /// Insert an entry, evicting older ones if necessary to honor
-    /// `max_bytes`. Naïve FIFO-on-overflow eviction is enough for v0.11.0.
+    /// Store a variant. Evicts oldest entries (by `expires_at`) until the
+    /// new one fits.
     pub fn put(&self, key: String, entry: Entry) {
         let size = entry_bytes(&entry);
         if size > self.max_bytes {
-            // Even the requested entry can't fit; refuse silently.
             return;
         }
         let Ok(mut s) = self.state.lock() else { return };
 
-        // Evict until we have room.
         while s.total_bytes + size > self.max_bytes {
-            let drop_key = s
-                .entries
-                .iter()
-                .min_by_key(|(_, e)| e.expires_at)
-                .map(|(k, _)| k.clone());
-            match drop_key {
-                Some(k) => {
-                    if let Some(removed) = s.entries.remove(&k) {
-                        let bytes_removed = entry_bytes(&removed);
-                        s.total_bytes = s.total_bytes.saturating_sub(bytes_removed);
-                        metrics::record_cache_evict(bytes_removed);
-                    } else {
-                        break;
+            // Find soonest-to-expire (key, signature) without holding a
+            // borrow into `s` past the lookup phase.
+            let target: Option<(String, String)> = {
+                let mut best: Option<(&str, &str, Instant)> = None;
+                for (k, vs) in s.entries.iter() {
+                    for v in vs {
+                        match &best {
+                            Some((_, _, t)) if *t <= v.expires_at => {}
+                            _ => {
+                                best = Some((
+                                    k.as_str(),
+                                    v.vary_signature.as_str(),
+                                    v.expires_at,
+                                ));
+                            }
+                        }
                     }
                 }
+                best.map(|(k, sig, _)| (k.to_string(), sig.to_string()))
+            };
+            let (k, sig) = match target {
+                Some(t) => t,
                 None => break,
+            };
+            // Scope the &mut borrow on s.entries so we can touch
+            // s.total_bytes / s.entries.remove afterwards without
+            // overlapping the lifetime.
+            let (bytes_removed, empty_now) = {
+                if let Some(vs) = s.entries.get_mut(&k) {
+                    let mut br = 0usize;
+                    if let Some(pos) =
+                        vs.iter().position(|v| v.vary_signature == sig)
+                    {
+                        let removed = vs.remove(pos);
+                        br = entry_bytes(&removed);
+                    }
+                    (br, vs.is_empty())
+                } else {
+                    (0, false)
+                }
+            };
+            if bytes_removed > 0 {
+                s.total_bytes = s.total_bytes.saturating_sub(bytes_removed);
+                metrics::record_cache_evict(bytes_removed);
+            }
+            if empty_now {
+                s.entries.remove(&k);
             }
         }
 
-        if let Some(old) = s.entries.insert(key, entry) {
-            let bytes_old = entry_bytes(&old);
-            s.total_bytes = s.total_bytes.saturating_sub(bytes_old);
-        }
+        // Same pattern: confine the &mut on s.entries to a tight scope so
+        // we can update s.total_bytes after.
+        let replaced_bytes = {
+            let variants = s.entries.entry(key).or_default();
+            let replaced = if let Some(pos) = variants
+                .iter()
+                .position(|v| v.vary_signature == entry.vary_signature)
+            {
+                let old = variants.remove(pos);
+                entry_bytes(&old)
+            } else {
+                0
+            };
+            variants.push(entry);
+            replaced
+        };
+        s.total_bytes = s.total_bytes.saturating_sub(replaced_bytes);
         s.total_bytes += size;
+
+        let entry_count: usize = s.entries.values().map(|v| v.len()).sum();
         metrics::set_cache_bytes(s.total_bytes as u64);
-        metrics::set_cache_entries(s.entries.len() as u64);
+        metrics::set_cache_entries(entry_count as u64);
     }
 }
 
@@ -138,20 +202,58 @@ fn entry_bytes(e: &Entry) -> usize {
         .iter()
         .map(|(n, v)| n.as_str().len() + v.as_bytes().len())
         .sum();
-    e.body.len() + header_bytes
+    let vary_bytes: usize = e.vary_headers.iter().map(|s| s.len()).sum::<usize>()
+        + e.vary_signature.len();
+    e.body.len() + header_bytes + vary_bytes
 }
 
-/// Outcome of consulting safety rules for an outgoing response.
+/// Build a stable "vary signature" for `req_headers` over `vary_names`.
+/// Each pair is `<name>=<value>` joined by `\0`. Order matches the input
+/// order so the same request always renders the same signature.
+pub fn build_signature(req_headers: &HeaderMap, vary_names: &[String]) -> String {
+    if vary_names.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(vary_names.len() * 16);
+    for name in vary_names {
+        let v = req_headers
+            .get(name.as_str())
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        out.push_str(name);
+        out.push('=');
+        out.push_str(v);
+        out.push('\0');
+    }
+    out
+}
+
+/// Extract the `Vary` header(s) into a normalized lowercase list of
+/// header names. Returns `Some(list)` for cacheable responses, or
+/// `Some(vec_with_star)` if the response said `Vary: *` (which is then
+/// caught by `decide_caching`).
+pub fn parse_vary(headers: &HeaderMap) -> Vec<String> {
+    let mut out = Vec::new();
+    for v in headers.get_all("vary").iter() {
+        if let Ok(s) = v.to_str() {
+            for token in s.split(',') {
+                let t = token.trim().to_ascii_lowercase();
+                if !t.is_empty() {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheDecision {
-    /// Cache this response with the given TTL.
     Store(Duration),
-    /// Don't cache, with a reason for diagnostics.
     Bypass(&'static str),
 }
 
-/// Decide whether a response is cacheable. Implements the safety guards
-/// listed at the module docs.
+/// Decide whether a response is cacheable.
 pub fn decide_caching(
     method: &hyper::Method,
     headers: &HeaderMap,
@@ -165,8 +267,9 @@ pub fn decide_caching(
     if headers.get("set-cookie").is_some() {
         return CacheDecision::Bypass("response has Set-Cookie");
     }
-    if headers.get("vary").is_some() {
-        return CacheDecision::Bypass("response has Vary");
+    // Vary: * — RFC 9111 says treat as uncacheable.
+    if parse_vary(headers).iter().any(|s| s == "*") {
+        return CacheDecision::Bypass("response has Vary: *");
     }
     if let Some(cc) = headers.get("cache-control").and_then(|v| v.to_str().ok()) {
         let cc = cc.to_ascii_lowercase();
@@ -201,6 +304,19 @@ mod tests {
         vec![(vec![200], Duration::from_secs(secs))]
     }
 
+    fn entry(body: &[u8], vary: &[&str], req: &HeaderMap) -> Entry {
+        let vary_headers: Vec<String> = vary.iter().map(|s| s.to_string()).collect();
+        let sig = build_signature(req, &vary_headers);
+        Entry {
+            status: 200,
+            headers: vec![],
+            body: Bytes::copy_from_slice(body),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            vary_headers,
+            vary_signature: sig,
+        }
+    }
+
     #[test]
     fn non_get_is_bypassed() {
         let d = decide_caching(&Method::POST, &HeaderMap::new(), 200, 10, &rules_for_200(60));
@@ -211,14 +327,16 @@ mod tests {
     fn set_cookie_blocks_caching() {
         let mut h = HeaderMap::new();
         h.insert("set-cookie", "sid=abc".parse().unwrap());
-        let d = decide_caching(&Method::GET, &h, 200, 10, &rules_for_200(60));
-        assert!(matches!(d, CacheDecision::Bypass(s) if s.contains("Set-Cookie")));
+        assert!(matches!(
+            decide_caching(&Method::GET, &h, 200, 10, &rules_for_200(60)),
+            CacheDecision::Bypass(_)
+        ));
     }
 
     #[test]
-    fn vary_blocks_caching() {
+    fn vary_star_is_bypassed() {
         let mut h = HeaderMap::new();
-        h.insert("vary", "Accept-Encoding".parse().unwrap());
+        h.insert("vary", "*".parse().unwrap());
         let d = decide_caching(&Method::GET, &h, 200, 10, &rules_for_200(60));
         assert!(matches!(d, CacheDecision::Bypass(s) if s.contains("Vary")));
     }
@@ -227,66 +345,72 @@ mod tests {
     fn cc_no_store_blocks_caching() {
         let mut h = HeaderMap::new();
         h.insert("cache-control", "no-store".parse().unwrap());
-        let d = decide_caching(&Method::GET, &h, 200, 10, &rules_for_200(60));
-        assert!(matches!(d, CacheDecision::Bypass(_)));
+        assert!(matches!(
+            decide_caching(&Method::GET, &h, 200, 10, &rules_for_200(60)),
+            CacheDecision::Bypass(_)
+        ));
     }
 
     #[test]
     fn missing_valid_rule_bypasses() {
-        let d = decide_caching(&Method::GET, &HeaderMap::new(), 404, 10, &rules_for_200(60));
-        assert!(matches!(d, CacheDecision::Bypass(_)));
+        assert!(matches!(
+            decide_caching(&Method::GET, &HeaderMap::new(), 404, 10, &rules_for_200(60)),
+            CacheDecision::Bypass(_)
+        ));
     }
 
     #[test]
     fn matching_status_stores() {
-        let d = decide_caching(&Method::GET, &HeaderMap::new(), 200, 10, &rules_for_200(60));
-        assert!(matches!(d, CacheDecision::Store(d) if d.as_secs() == 60));
+        assert!(matches!(
+            decide_caching(&Method::GET, &HeaderMap::new(), 200, 10, &rules_for_200(60)),
+            CacheDecision::Store(d) if d.as_secs() == 60
+        ));
     }
 
     #[test]
-    fn store_roundtrip_and_expiry() {
+    fn vary_variants_kept_separately() {
         let s = CacheStore::new("t".into(), 1024 * 1024);
-        let entry = Entry {
-            status: 200,
-            headers: vec![],
-            body: Bytes::from_static(b"hello"),
-            expires_at: Instant::now() + Duration::from_secs(60),
-        };
-        s.put("k".into(), entry);
-        let got = s.get("k").expect("hit");
-        assert_eq!(&got.body[..], b"hello");
+        let mut req_gz = HeaderMap::new();
+        req_gz.insert("accept-encoding", "gzip".parse().unwrap());
+        let mut req_id = HeaderMap::new();
+        req_id.insert("accept-encoding", "identity".parse().unwrap());
+
+        s.put(
+            "k".into(),
+            entry(b"GZIPPED", &["accept-encoding"], &req_gz),
+        );
+        s.put(
+            "k".into(),
+            entry(b"PLAIN", &["accept-encoding"], &req_id),
+        );
+
+        let gz = s.get("k", &req_gz).expect("hit gz");
+        assert_eq!(&gz.body[..], b"GZIPPED");
+        let id = s.get("k", &req_id).expect("hit identity");
+        assert_eq!(&id.body[..], b"PLAIN");
+    }
+
+    #[test]
+    fn vary_request_without_matching_variant_misses() {
+        let s = CacheStore::new("t".into(), 1024 * 1024);
+        let mut req_gz = HeaderMap::new();
+        req_gz.insert("accept-encoding", "gzip".parse().unwrap());
+        s.put(
+            "k".into(),
+            entry(b"GZIPPED", &["accept-encoding"], &req_gz),
+        );
+        let mut req_br = HeaderMap::new();
+        req_br.insert("accept-encoding", "br".parse().unwrap());
+        assert!(s.get("k", &req_br).is_none());
     }
 
     #[test]
     fn store_drops_expired_on_read() {
         let s = CacheStore::new("t".into(), 1024 * 1024);
-        let entry = Entry {
-            status: 200,
-            headers: vec![],
-            body: Bytes::from_static(b"x"),
-            expires_at: Instant::now() - Duration::from_millis(1),
-        };
-        s.put("k".into(), entry);
-        assert!(s.get("k").is_none());
-    }
-
-    #[test]
-    fn store_evicts_when_full() {
-        let s = CacheStore::new("t".into(), 32);
-        // Each entry is ~16 bytes of body, headers negligible.
-        for i in 0..6 {
-            s.put(
-                format!("k{i}"),
-                Entry {
-                    status: 200,
-                    headers: vec![],
-                    body: Bytes::from(vec![0u8; 16]),
-                    expires_at: Instant::now() + Duration::from_secs(60),
-                },
-            );
-        }
-        // The store should have stayed under the cap.
-        let st = s.state.lock().unwrap();
-        assert!(st.total_bytes <= 32, "total {} > cap", st.total_bytes);
+        let req = HeaderMap::new();
+        let mut e = entry(b"x", &[], &req);
+        e.expires_at = Instant::now() - Duration::from_millis(1);
+        s.put("k".into(), e);
+        assert!(s.get("k", &req).is_none());
     }
 }

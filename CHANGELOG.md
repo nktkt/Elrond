@@ -2,6 +2,58 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.34.0] - 2026-05-16
+
+**Cache: Vary-aware variants.** 80 unit tests. Pre-alpha.
+
+Previously, any response with a `Vary` header was bypassed by the cache
+(documented as a deliberate safety choice). v0.34.0 actually honors
+`Vary`: one `proxy_cache_key` can now hold multiple variants, each keyed
+by the request-header values the upstream said it varies on. The classic
+case is `Vary: Accept-Encoding` — gzip and identity bodies are both
+cached and served to the right client.
+
+### Added
+
+- **Vary-aware variants** keyed by a `vary_signature`
+  (`name=value\0name=value\0…`). One `cache_key` → `Vec<Entry>`; lookup
+  picks the variant whose signature matches the current request.
+- **`Vary: *`** is still bypassed (RFC 9111 says it's uncacheable).
+- Eviction operates per-variant, soonest-to-expire first.
+- 3 new unit tests:
+  - `vary_variants_kept_separately` — two requests with different
+    `Accept-Encoding` get their own bodies.
+  - `vary_request_without_matching_variant_misses` — a third encoding
+    (`br`) misses because no `br` variant was stored.
+  - `vary_star_is_bypassed`.
+
+### Changed
+
+- `cache::Entry` gains `vary_headers: Vec<String>` (lowercase, from the
+  response) and `vary_signature: String` (computed from the request at
+  store time).
+- `cache::CacheStore::get(key, req_headers)` now takes the request's
+  headers so it can select the right variant.
+- `proxy::maybe_cache` reads the response's `Vary`, computes the
+  signature from the captured request headers, and stores accordingly.
+
+### Verified
+
+```
+PUT  k with Vary=accept-encoding, req gzip      → variant A "GZIPPED"
+PUT  k with Vary=accept-encoding, req identity  → variant B "PLAIN"
+GET  k with req gzip                            → A "GZIPPED"
+GET  k with req identity                        → B "PLAIN"
+GET  k with req br (no matching variant)        → MISS
+```
+
+### Known follow-ups
+
+- No size cap per `cache_key` (a backend that varies on a high-cardinality
+  header could grow many variants). Pair with `limit_req` if needed.
+- `conditional revalidation` (304 from upstream still pending), and
+  `stale-while-revalidate` not yet implemented.
+
 ## [0.33.0] - 2026-05-16
 
 **UDP `stream` proxy.** 80 unit tests. Pre-alpha.
@@ -1667,6 +1719,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.34.0]: https://github.com/nktkt/Elrond/releases/tag/v0.34.0
 [0.33.0]: https://github.com/nktkt/Elrond/releases/tag/v0.33.0
 [0.32.0]: https://github.com/nktkt/Elrond/releases/tag/v0.32.0
 [0.31.0]: https://github.com/nktkt/Elrond/releases/tag/v0.31.0
