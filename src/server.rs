@@ -18,6 +18,10 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::app::{ActionRt, ListenerCfg, LocationRt, ServerState};
+
+/// Upper bound on how many bytes we'll buffer to gzip a proxied response.
+/// Anything larger (or with no `Content-Length`) streams uncompressed.
+const PROXY_GZIP_MAX_COLLECT: usize = 256 * 1024;
 use crate::body::{full, text, ElrondBody};
 use crate::gzip;
 use crate::metrics;
@@ -409,21 +413,24 @@ async fn handle(
         }
         // Proxy responses stream — only static/return bodies are gzip-eligible
         // in v0.10.0. Detection is by the action variant we just served.
-        gzip_eligible = matches!(
-            &loc.action,
-            ActionRt::Return { .. }
-                | ActionRt::Static { .. }
-                | ActionRt::Metrics
-                | ActionRt::TryFiles { .. }
-        ) && loc.gzip.unwrap_or(state.gzip);
+        gzip_eligible = loc.gzip.unwrap_or(state.gzip);
     }
 
     if gzip_eligible {
+        // Already-buffered responses (Static / Return / Metrics / TryFiles)
+        // have an exact in-memory body; let gzip collect freely. Proxy
+        // responses stream, so guard the buffer with a size limit and skip
+        // gzip when the upstream didn't tell us the size.
+        let max_collect = match matched.map(|l| &l.action) {
+            Some(ActionRt::Proxy { .. }) => Some(PROXY_GZIP_MAX_COLLECT),
+            _ => None,
+        };
         response = gzip::maybe_compress(
             response,
             &headers,
             true,
             &state.gzip_types,
+            max_collect,
         )
         .await;
     }

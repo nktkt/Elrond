@@ -43,11 +43,18 @@ const DEFAULT_TYPES: &[&str] = &[
 /// Compress `resp` in place if every condition is met. Returns the response
 /// unchanged when compression is skipped, and updates `Content-Encoding`,
 /// `Content-Length`, and `Vary` when it isn't.
+///
+/// `max_collect` caps how many bytes the gzip step will buffer when the body
+/// is streaming. `None` means "no cap" — appropriate for the static path
+/// where the body is already a `Full<Bytes>`. `Some(n)` means: if the
+/// `Content-Length` header is missing or larger than `n`, skip gzip and
+/// stream the body uncompressed.
 pub async fn maybe_compress(
     mut resp: Response<ElrondBody>,
     req_headers: &HeaderMap,
     gzip_enabled: bool,
     gzip_types: &[String],
+    max_collect: Option<usize>,
 ) -> Response<ElrondBody> {
     if !gzip_enabled || !client_accepts_gzip(req_headers) {
         return resp;
@@ -60,6 +67,18 @@ pub async fn maybe_compress(
     }
     if !content_type_eligible(resp.headers(), gzip_types) {
         return resp;
+    }
+    if let Some(max) = max_collect {
+        let cl = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<usize>().ok());
+        match cl {
+            Some(n) if n > max => return resp,
+            None => return resp, // unknown length + a cap is set → skip
+            _ => {}
+        }
     }
 
     let (parts, body) = resp.into_parts();
@@ -188,7 +207,7 @@ mod tests {
             .body(full("tiny"))
             .unwrap();
         let req = req_with_accept("gzip");
-        let out = maybe_compress(resp, &req, true, &[]).await;
+        let out = maybe_compress(resp, &req, true, &[], None).await;
         assert!(!out.headers().contains_key("content-encoding"));
     }
 
@@ -202,7 +221,7 @@ mod tests {
             .body(full(payload.clone()))
             .unwrap();
         let req = req_with_accept("gzip");
-        let out = maybe_compress(resp, &req, true, &[]).await;
+        let out = maybe_compress(resp, &req, true, &[], None).await;
         let ce = out
             .headers()
             .get("content-encoding")

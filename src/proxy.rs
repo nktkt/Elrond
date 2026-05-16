@@ -226,7 +226,7 @@ async fn forward_to_peer(
     for h in HOP_BY_HOP {
         parts.headers.remove(h);
     }
-    add_forwarding_headers(&mut parts.headers, client_peer);
+    add_forwarding_headers(&mut parts.headers, client_peer, ctx.scheme);
     apply_proxy_set_headers(&mut parts.headers, set_headers, ctx);
 
     let outbound = Request::from_parts(parts, body);
@@ -339,7 +339,11 @@ fn mark_cache(mut resp: Response<ElrondBody>, label: &'static str) -> Response<E
     resp
 }
 
-fn add_forwarding_headers(headers: &mut hyper::HeaderMap, peer: SocketAddr) {
+fn add_forwarding_headers(
+    headers: &mut hyper::HeaderMap,
+    peer: SocketAddr,
+    scheme: &str,
+) {
     let ip = peer.ip().to_string();
     let Ok(ip_value) = HeaderValue::from_str(&ip) else {
         return;
@@ -356,6 +360,12 @@ fn add_forwarding_headers(headers: &mut hyper::HeaderMap, peer: SocketAddr) {
         None => {
             headers.insert("x-forwarded-for", ip_value);
         }
+    }
+
+    // X-Forwarded-Proto reflects the *client-facing* scheme. Many backends
+    // rely on this to build absolute URLs and to set Secure cookies.
+    if let Ok(v) = HeaderValue::from_str(scheme) {
+        headers.insert("x-forwarded-proto", v);
     }
 }
 

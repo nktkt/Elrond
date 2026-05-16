@@ -2,6 +2,52 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.26.0] - 2026-05-16
+
+**gzip on proxied bodies + automatic `X-Forwarded-Proto`.** 80 unit
+tests. Pre-alpha.
+
+### Added
+
+- **gzip on proxied responses.** Previously only static / `return` /
+  `metrics` / `try_files` bodies were eligible — proxied responses
+  streamed uncompressed. Now, when the location has `gzip on` and the
+  upstream response advertises a `Content-Length` no larger than
+  256 KiB (`PROXY_GZIP_MAX_COLLECT`), Elrond buffers and gzips.
+  Larger or unknown-length bodies still stream through uncompressed
+  (no memory blow-up).
+- **`X-Forwarded-Proto`** is set automatically on every proxied
+  request from the listener's scheme (`http` or `https`). This is what
+  backends use to build absolute URLs and decide whether to set
+  `Secure` cookies — getting it wrong silently is a class of common
+  production bug.
+
+### Changed
+
+- `gzip::maybe_compress` gained a `max_collect: Option<usize>`
+  argument. `None` (static path) means "no cap, body is already
+  buffered". `Some(n)` (proxy path) means "skip if Content-Length is
+  missing or > n".
+- `add_forwarding_headers` now takes the scheme and sets
+  `X-Forwarded-Proto`.
+
+### Verified end-to-end
+
+```
+GET /headers       →  x-real-ip=127.0.0.1
+                       x-forwarded-for=127.0.0.1
+                       x-forwarded-proto=http
+GET /              →  6041 bytes plain (Accept-Encoding: identity)
+                   →   482 bytes gzipped on the wire (Accept-Encoding: gzip)
+```
+
+### Known follow-ups
+
+- The 256 KiB threshold and the "skip when Content-Length is unknown"
+  policy are hard-coded. Adding `gzip_min_length` / `gzip_buffers` /
+  `gzip_proxied` enforcement is a follow-up.
+- No Brotli (`br`).
+
 ## [0.25.0] - 2026-05-16
 
 **Production limits & timeouts.** 80 unit tests. Pre-alpha.
@@ -1252,6 +1298,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.26.0]: https://github.com/nktkt/Elrond/releases/tag/v0.26.0
 [0.25.0]: https://github.com/nktkt/Elrond/releases/tag/v0.25.0
 [0.24.0]: https://github.com/nktkt/Elrond/releases/tag/v0.24.0
 [0.23.0]: https://github.com/nktkt/Elrond/releases/tag/v0.23.0
