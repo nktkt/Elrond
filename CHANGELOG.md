@@ -2,6 +2,13 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.40.1] - 2026-05-16
+
+**Docker build fix.** Same code as v0.40.0; only the `.dockerignore`
+changed so the bundled `examples/docker-default.conf` actually
+makes it into the build context (v0.40.0's GHCR push failed with
+"file not found" for this reason).
+
 ## [0.40.0] - 2026-05-16
 
 **Production hardening.** 83 unit tests (80 + 3 new). Pre-alpha.
@@ -1973,6 +1980,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.40.1]: https://github.com/nktkt/Elrond/releases/tag/v0.40.1
 [0.40.0]: https://github.com/nktkt/Elrond/releases/tag/v0.40.0
 [0.39.0]: https://github.com/nktkt/Elrond/releases/tag/v0.39.0
 [0.38.0]: https://github.com/nktkt/Elrond/releases/tag/v0.38.0

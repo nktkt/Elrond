@@ -3,7 +3,8 @@ target/
 .github/
 *.md
 !README.md
-examples/
+examples/*
+!examples/docker-default.conf
 docs/
 ROADMAP.md
 public/
