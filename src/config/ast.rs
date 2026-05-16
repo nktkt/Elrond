@@ -189,6 +189,9 @@ pub struct Server {
     pub gzip: Option<bool>,
     /// Additional MIME types eligible for on-the-fly gzip.
     pub gzip_types: Vec<String>,
+    /// `gzip_min_length <N>;` — bodies shorter than this skip compression.
+    /// `None` → 20 bytes (Nginx default).
+    pub gzip_min_length: Option<usize>,
     /// Server-level `add_header` directives. Cascade into every location;
     /// location-level `add_header` is applied last and wins on conflicts.
     pub add_headers: Vec<(String, Template)>,

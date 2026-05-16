@@ -335,8 +335,15 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
                 let value = d.args.get(1).cloned().unwrap_or_default();
                 server.add_headers.push((name, Template::parse(&value)));
             }
-            "gzip_disable" | "gzip_min_length" | "gzip_comp_level"
-            | "gzip_proxied" | "gzip_vary" | "gzip_buffers" => {
+            "gzip_min_length" => {
+                let v = arg1(d)?;
+                let n = parse_size(&v).ok_or_else(|| {
+                    format!("line {}: invalid gzip_min_length '{v}'", d.line)
+                })?;
+                server.gzip_min_length = Some(n);
+            }
+            "gzip_disable" | "gzip_comp_level" | "gzip_proxied"
+            | "gzip_vary" | "gzip_buffers" => {
                 /* Tolerated; not yet applied. */
             }
             "root" => { /* handled in first pass */ }

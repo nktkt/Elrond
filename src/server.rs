@@ -473,6 +473,7 @@ async fn handle(
             true,
             &state.gzip_types,
             max_collect,
+            state.gzip_min_length,
         )
         .await;
     }

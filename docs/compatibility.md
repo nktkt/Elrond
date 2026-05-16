@@ -1,7 +1,7 @@
 # Nginx Compatibility Matrix
 
 Directive-by-directive view of "what works in Elrond today" versus "what
-Nginx supports." This document is authoritative for **v0.27.0**.
+Nginx supports." This document is authoritative for **v0.37.0**.
 
 - **✅ Implemented** — does what Nginx does, modulo any caveat noted.
 - **🟡 Parsed-but-ignored** — accepted by the parser so real-world
@@ -38,11 +38,14 @@ Directives not in this list are *not* recognized; using them yields a
 | `limit_req_zone`                       |   ✅   | |
 | `limit_conn_zone`                      |   ✅   | |
 | `map`                                  |   ✅   | Literal patterns only (no regex). Chained evaluation in declaration order. |
+| `auth_request`                         |   ✅   | URL must be a full `http://…` (no internal-location subrequests yet). 2xx allows; otherwise the auth service's status is returned. |
+| `mirror`                               |   ✅   | Fire-and-forget shadow GET; repeatable. Request bodies are not mirrored (only method + URL + selected headers). |
 | `sendfile` / `tcp_nopush`              |   🟡   | |
 | `keepalive_timeout`                    |   🟡   | |
 | `types` / `default_type` / `types_hash_*` | 🟡 | Built-in MIME table is used. |
-| `gzip` / `gzip_types`                  |   ✅   | See "gzip" below. |
-| `gzip_min_length` / `gzip_disable` / `gzip_comp_level` / `gzip_proxied` / `gzip_vary` / `gzip_buffers` | 🟡 | |
+| `gzip` / `gzip_types`                  |   ✅   | Applies to static AND proxied responses (proxied size-guarded at 256 KiB). |
+| `gzip_min_length`                      |   ✅   | Default 20 bytes (Nginx default). |
+| `gzip_disable` / `gzip_comp_level` / `gzip_proxied` / `gzip_vary` / `gzip_buffers` | 🟡 | |
 | `log_format`                           |   🟡   | Access line format is currently fixed. |
 | `client_max_body_size`                 |   ✅   | Cascades to server level; enforced via `Content-Length` → `413`. |
 | `server_tokens`                        |   🟡   | |
@@ -59,7 +62,7 @@ Directives not in this list are *not* recognized; using them yields a
 | `listen … udp`                         |   ❌   | Stream UDP not implemented. |
 | `server_name`                          |   ✅   | Used for SNI multi-cert routing, `$server_name`, and `Host`-based vhost routing. |
 | `root`                                 |   ✅   | Cascades into locations with no content directive. |
-| `location <pat>`                       |   ✅   | Prefix and exact `=`. `~` / `~*` / `^~` regex modifiers **❌ rejected**. |
+| `location <pat>`                       |   ✅   | Prefix, exact `=`, and regex (`~`, `~*`). `^~` accepted but treated as plain prefix (does not yet block regex consideration). |
 | `ssl_certificate`                      |   ✅   | Multi-cert SNI: multiple `server` blocks on the same `listen` each declare their own cert. |
 | `ssl_certificate_key`                  |   ✅   | |
 | `ssl_protocols`                        |   ✅   | Tokens: `TLSv1.2`, `TLSv1.3`. The strictest set across vhosts wins per listener. Other tokens rejected. |
@@ -75,7 +78,7 @@ Directives not in this list are *not* recognized; using them yields a
 | Directive                              | Status | Notes |
 | -------------------------------------- | :----: | ----- |
 | `return <status> [body]`               |   ✅   | Body supports variables. |
-| `proxy_pass`                           |   ✅   | Direct address or named upstream. |
+| `proxy_pass`                           |   ✅   | `http://…` or `https://…`; direct address, named upstream, or variable-driven template (e.g. `proxy_pass http://$pool;`). |
 | `root`                                 |   ✅   | |
 | `alias`                                |   ✅   | |
 | `try_files`                            |   ✅   | Path-existence probes + `=NNN` final entry. Path-traversal-safe. No `@named` location targets yet. |
@@ -93,13 +96,16 @@ Directives not in this list are *not* recognized; using them yields a
 | `proxy_cache_key <tpl>`                |   ✅   | |
 | `proxy_cache_valid [code\|any]… <dur>` |   ✅   | Repeatable; safety guards reject caching `Set-Cookie` / `Vary` / `Cache-Control: no-store\|private\|no-cache` / body > 4 MiB. |
 | `proxy_cache_bypass` / `proxy_no_cache` / `proxy_cache_lock` / `proxy_cache_use_stale` / `proxy_cache_revalidate` / `proxy_cache_methods` / `proxy_cache_min_uses` | 🟡 | |
+| Cache `Vary` handling                  |   ✅   | Multiple variants per cache key, signed by the request's vary-axis headers. `Vary: *` → BYPASS (RFC 9111). |
+| `proxy_ssl_verify on\|off`             |   ✅   | Default `on` (system trust store). `off` accepts any server cert — test/staging only. |
+| `proxy_ssl_certificate` / `_key`       |   ✅   | mTLS to upstream. Both required; setting one alone is a config-load error. |
+| `proxy_ssl_trusted_certificate` / `_server_name` / `_session_reuse` / `_protocols` / `_ciphers` | 🟡 | |
 | `proxy_connect_timeout`                |   ✅   | Process-wide via `HttpConnector`. |
 | `proxy_read_timeout`                   |   ✅   | Per-location; wraps the whole upstream exchange with `tokio::time::timeout`. |
 | `proxy_send_timeout`                   |   🟡   | Covered in practice by `proxy_read_timeout`. |
 | `proxy_next_upstream`                  |   🟡   | Hard-coded behavior: retry on connect-error and 5xx for idempotent methods (`GET`/`HEAD`/`OPTIONS`/`DELETE`). |
 | `proxy_hide_header` / `proxy_pass_header` / `proxy_redirect` / `proxy_buffering` | 🟡 | |
 | `index`                                |   🟡   | |
-| `auth_request`                         |   ❌   | Not implemented. |
 
 ## `upstream` context
 
@@ -121,7 +127,7 @@ Directives not in this list are *not* recognized; using them yields a
 | `upstream { … }`                       |   ✅   | |
 | `server { listen, proxy_pass }`        |   ✅   | TCP only. |
 | `listen … ssl`                         |   ❌   | TLS pass-through / termination not yet. |
-| `listen … udp`                         |   ❌   | |
+| `listen … udp`                         |   ✅   | Stateless request/response UDP relay (DNS / syslog / metrics). 5s reply timeout. |
 | `access_log` / `error_log` / `log_format` | 🟡 | |
 | `proxy_timeout` / `proxy_connect_timeout` / `tcp_nodelay` | 🟡 | |
 | `resolver`                             |   🟡   | |

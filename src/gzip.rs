@@ -55,6 +55,7 @@ pub async fn maybe_compress(
     gzip_enabled: bool,
     gzip_types: &[String],
     max_collect: Option<usize>,
+    min_length: usize,
 ) -> Response<ElrondBody> {
     if !gzip_enabled || !client_accepts_gzip(req_headers) {
         return resp;
@@ -93,9 +94,8 @@ pub async fn maybe_compress(
         }
     };
 
-    // Tiny bodies aren't worth the overhead — Nginx's default cutoff is 20
-    // bytes; we match that here.
-    if collected.len() < 20 {
+    // Tiny bodies aren't worth the overhead.
+    if collected.len() < min_length {
         return Response::from_parts(parts, full(collected));
     }
 
@@ -207,7 +207,7 @@ mod tests {
             .body(full("tiny"))
             .unwrap();
         let req = req_with_accept("gzip");
-        let out = maybe_compress(resp, &req, true, &[], None).await;
+        let out = maybe_compress(resp, &req, true, &[], None, 20).await;
         assert!(!out.headers().contains_key("content-encoding"));
     }
 
@@ -221,7 +221,7 @@ mod tests {
             .body(full(payload.clone()))
             .unwrap();
         let req = req_with_accept("gzip");
-        let out = maybe_compress(resp, &req, true, &[], None).await;
+        let out = maybe_compress(resp, &req, true, &[], None, 20).await;
         let ce = out
             .headers()
             .get("content-encoding")

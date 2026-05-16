@@ -72,6 +72,8 @@ pub struct ServerState {
     /// Effective gzip-enabled state for this server.
     pub gzip: bool,
     pub gzip_types: Vec<String>,
+    /// `gzip_min_length` for this server (default 20 bytes).
+    pub gzip_min_length: usize,
     /// `map` declarations, evaluated once per request before any
     /// location-level templates run.
     pub maps: Arc<Vec<crate::config::MapDecl>>,
@@ -761,6 +763,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             scheme,
             gzip: s.gzip.unwrap_or(false),
             gzip_types: s.gzip_types.clone(),
+            gzip_min_length: s.gzip_min_length.unwrap_or(20),
             maps: Arc::new(http.maps.clone()),
             client_max_body_size: s
                 .client_max_body_size
