@@ -2,6 +2,53 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.29.0] - 2026-05-16
+
+**Regex `location` (`~` and `~*`).** 80 unit tests. Pre-alpha.
+
+### Added
+
+- **`location ~ pattern`** — case-sensitive regex match.
+- **`location ~* pattern`** — case-insensitive regex match.
+- **`location ^~ /prefix`** — accepted (treated as a plain prefix in
+  v0.29.0; the "skip regex matching" semantics are documented as a
+  follow-up).
+- Adds the `regex` crate. Patterns are compiled at runtime build time
+  with `regex::RegexBuilder`; bad patterns surface as
+  `location regex 'XYZ' is invalid: …` at config-load.
+
+### Routing precedence
+
+Mirrors Nginx (with the v0.29 `^~` caveat noted above):
+
+1. Exact match (`=`)
+2. Regex match (`~` / `~*`) — first match in declaration order
+3. Longest prefix
+
+### Verified end-to-end
+
+```nginx
+location = /healthz { return 200 "exact"; }
+location ~ "\.php$"    { return 200 "regex-php"; }
+location ~* "\.JPEG?$" { return 200 "regex-jpeg-ci"; }
+location /api/v1/ { return 200 "prefix-v1"; }
+location /       { return 200 "prefix-root"; }
+```
+
+```
+/healthz        → exact
+/any/path.php   → regex-php
+/image.JPEG     → regex-jpeg-ci    (case-insensitive)
+/api/v1/users   → prefix-v1        (no regex matched; longest prefix)
+/                → prefix-root
+```
+
+### Known follow-ups
+
+- `^~` is accepted but treated as a plain prefix; full
+  "if this prefix matches, skip regex consideration" semantics not
+  yet wired.
+
 ## [0.28.0] - 2026-05-16
 
 **Variable-driven `proxy_pass`.** 80 unit tests. Pre-alpha.
@@ -1410,6 +1457,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.29.0]: https://github.com/nktkt/Elrond/releases/tag/v0.29.0
 [0.28.0]: https://github.com/nktkt/Elrond/releases/tag/v0.28.0
 [0.27.0]: https://github.com/nktkt/Elrond/releases/tag/v0.27.0
 [0.26.0]: https://github.com/nktkt/Elrond/releases/tag/v0.26.0

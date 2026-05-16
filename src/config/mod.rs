@@ -344,12 +344,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_location_modifier() {
-        let err = parse_str(
-            "http { server { listen 8080; location ~ \\.php$ { return 200; } } }",
+    fn parses_regex_location() {
+        let cfg = parse_str(
+            r#"http { server { listen 8080;
+                  location ~ "\.php$" { return 200 "php"; }
+                  location ~* "\.JPG$" { return 200 "jpg"; }
+               } }"#,
         )
-        .unwrap_err();
-        assert!(err.contains("location modifier"), "got: {err}");
+        .unwrap();
+        let locs = &cfg.http.unwrap().servers[0].locations;
+        assert_eq!(locs.len(), 2);
+        assert!(matches!(
+            locs[0].kind,
+            LocationKind::Regex { case_insensitive: false, .. }
+        ));
+        assert!(matches!(
+            locs[1].kind,
+            LocationKind::Regex { case_insensitive: true, .. }
+        ));
     }
 
     #[test]

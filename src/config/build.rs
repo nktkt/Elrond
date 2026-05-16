@@ -405,9 +405,39 @@ fn parse_location_pattern(
             })?;
             Ok((LocationKind::Exact, p.clone()))
         }
-        "~" | "~*" | "^~" => Err(format!(
-            "line {line}: location modifier '{first}' is not supported yet"
-        )),
+        "~" => {
+            let p = args.get(1).ok_or_else(|| {
+                format!("line {line}: 'location ~' requires a regex pattern")
+            })?;
+            Ok((
+                LocationKind::Regex {
+                    pattern: p.clone(),
+                    case_insensitive: false,
+                },
+                p.clone(),
+            ))
+        }
+        "~*" => {
+            let p = args.get(1).ok_or_else(|| {
+                format!("line {line}: 'location ~*' requires a regex pattern")
+            })?;
+            Ok((
+                LocationKind::Regex {
+                    pattern: p.clone(),
+                    case_insensitive: true,
+                },
+                p.clone(),
+            ))
+        }
+        "^~" => {
+            // Non-regex prefix that's exempted from later regex consideration.
+            // v0.29.0 treats `^~ /prefix` as a plain Prefix and documents the
+            // deviation from Nginx's "skip regex matching" semantics.
+            let p = args.get(1).ok_or_else(|| {
+                format!("line {line}: 'location ^~' requires a path")
+            })?;
+            Ok((LocationKind::Prefix, p.clone()))
+        }
         path => Ok((LocationKind::Prefix, path.to_string())),
     }
 }

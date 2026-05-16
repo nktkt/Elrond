@@ -77,13 +77,27 @@ pub struct ServerState {
     /// `client_max_body_size`: 0 means unlimited. Defaults to 1 MiB.
     pub client_max_body_size: usize,
     exact_locs: Vec<LocationRt>,
+    regex_locs: Vec<(regex::Regex, LocationRt)>,
     prefix_locs: Vec<LocationRt>,
 }
 
 impl ServerState {
+    /// Nginx-style routing precedence (with a v0.29.0 caveat):
+    ///   1. Exact match (`=`).
+    ///   2. Regex match (`~`, `~*`) — first match in declaration order.
+    ///   3. Longest prefix.
+    ///
+    /// Note: `^~` is currently parsed but treated as a plain prefix
+    /// (does not block regex consideration). That deviates from Nginx
+    /// for configs that intermix `^~` and regex `location`s.
     pub fn route(&self, path: &str) -> Option<&LocationRt> {
         for l in &self.exact_locs {
             if l.path == path {
+                return Some(l);
+            }
+        }
+        for (re, l) in &self.regex_locs {
+            if re.is_match(path) {
                 return Some(l);
             }
         }
@@ -522,6 +536,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             .ok_or("a 'server' block is missing its 'listen' directive")?;
 
         let mut exact_locs: Vec<LocationRt> = Vec::new();
+        let mut regex_locs: Vec<(regex::Regex, LocationRt)> = Vec::new();
         let mut prefix_locs: Vec<LocationRt> = Vec::new();
 
         for loc in &s.locations {
@@ -655,10 +670,22 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 proxy_connect_timeout: loc.proxy_connect_timeout,
                 proxy_read_timeout: loc.proxy_read_timeout,
             };
-            if loc.kind == LocationKind::Exact {
-                exact_locs.push(location_rt);
-            } else {
-                prefix_locs.push(location_rt);
+            match &loc.kind {
+                LocationKind::Exact => exact_locs.push(location_rt),
+                LocationKind::Regex {
+                    pattern,
+                    case_insensitive,
+                } => {
+                    let mut builder = regex::RegexBuilder::new(pattern);
+                    builder.case_insensitive(*case_insensitive);
+                    let compiled = builder.build().map_err(|e| {
+                        format!(
+                            "location regex '{pattern}' is invalid: {e}"
+                        )
+                    })?;
+                    regex_locs.push((compiled, location_rt));
+                }
+                LocationKind::Prefix => prefix_locs.push(location_rt),
             }
         }
         prefix_locs.sort_by(|a, b| b.path.len().cmp(&a.path.len()));
@@ -692,6 +719,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 .client_max_body_size
                 .unwrap_or(DEFAULT_CLIENT_MAX_BODY_SIZE),
             exact_locs,
+            regex_locs,
             prefix_locs,
         });
         staged.push((

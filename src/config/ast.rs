@@ -200,10 +200,17 @@ pub enum TlsVersion {
     Tls13,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocationKind {
+    /// `location = /path` — exact equality, highest priority.
     Exact,
+    /// `location /path` (or `^~ /path`) — longest-prefix-wins.
     Prefix,
+    /// `location ~ pattern` (case-sensitive) or `location ~* pattern`
+    /// (case-insensitive). Patterns are stored as raw strings here and
+    /// compiled at runtime build time so syntactic errors surface with
+    /// the offending pattern.
+    Regex { pattern: String, case_insensitive: bool },
 }
 
 #[derive(Debug)]
