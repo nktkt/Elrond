@@ -238,4 +238,15 @@ pub enum Action {
     Alias { dir: String },
     /// Expose Prometheus-format metrics at this location.
     Metrics,
+    /// `try_files arg1 arg2 … argN;` — try each candidate in turn. The
+    /// last entry is always served (or returns its status if `=NNN`).
+    TryFiles { root: String, entries: Vec<TryFilesEntry> },
+}
+
+#[derive(Debug, Clone)]
+pub enum TryFilesEntry {
+    /// `$uri`, `$uri/index.html`, `/fallback.html`, etc.
+    Path(Template),
+    /// `=404`, `=410`, etc. — only legal as the last entry.
+    Status(u16),
 }

@@ -2,6 +2,58 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.24.0] - 2026-05-16
+
+**`try_files` (Phase 3 closer).** 80 unit tests. Pre-alpha.
+
+The standard SPA-hosting pattern works now:
+
+```nginx
+location / {
+    try_files $uri /index.html;
+}
+```
+
+### Added
+
+- **`try_files arg1 arg2 … argN;`** at location level. Each non-final
+  entry is treated as a path-existence probe rooted at the current
+  `root`. The first existing file is served. The final entry is always
+  honored:
+  - **Path** (`/index.html`): served unconditionally (SPA fallback).
+  - **Status** (`=404`, `=410`): returned as that status code; only
+    valid as the last entry.
+- Paths support full variable templates (`$uri`, `$arg_*`, etc.).
+- Path-traversal protection: any rendered candidate containing `..`
+  or other non-normal components is skipped (and `403`'d if it's the
+  final entry).
+- New `static_files::try_files()` helper that reuses the existing
+  static serving pipeline (Range, ETag, conditional GET, HEAD) for
+  whatever file ends up matched.
+- gzip eligibility extended to `TryFiles` actions; SPA shells get
+  compressed like any other static response.
+- Config validation: `try_files` may share a location with `root` but
+  not with `proxy_pass` / `return` / `metrics` / etc. — those produce
+  a clear config-load error.
+
+### Verified end-to-end
+
+```
+GET /assets/main.css          →  200  text/css       (real file)
+GET /                         →  200  text/html      (root index)
+GET /users/123/profile        →  200  text/html      (SPA fallback)
+GET /api/unknown              →  404                  (=404)
+GET /../../../etc/passwd      →  200  text/html      (SPA fallback;
+                                                       not the host file)
+```
+
+### Known follow-ups
+
+- No directory probe (`$uri/`) yet — a trailing slash is treated like
+  any other path component.
+- No `@named` location redirects; the final entry must be a Path or
+  `=NNN`.
+
 ## [0.23.0] - 2026-05-16
 
 **SNI multi-cert + per-`Host` virtual hosts on shared listeners.** 80
@@ -1146,6 +1198,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.24.0]: https://github.com/nktkt/Elrond/releases/tag/v0.24.0
 [0.23.0]: https://github.com/nktkt/Elrond/releases/tag/v0.23.0
 [0.22.0]: https://github.com/nktkt/Elrond/releases/tag/v0.22.0
 [0.21.0]: https://github.com/nktkt/Elrond/releases/tag/v0.21.0

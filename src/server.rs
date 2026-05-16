@@ -351,6 +351,16 @@ async fn handle(
                             .body(full(body))
                             .expect("metrics response is well-formed")
                     }
+                    ActionRt::TryFiles { root, entries } => {
+                        static_files::try_files(
+                            root,
+                            entries,
+                            &ctx,
+                            &headers,
+                            &method,
+                        )
+                        .await
+                    }
                 };
                 (resp, Some(loc))
             }
@@ -367,7 +377,10 @@ async fn handle(
         // in v0.10.0. Detection is by the action variant we just served.
         gzip_eligible = matches!(
             &loc.action,
-            ActionRt::Return { .. } | ActionRt::Static { .. } | ActionRt::Metrics
+            ActionRt::Return { .. }
+                | ActionRt::Static { .. }
+                | ActionRt::Metrics
+                | ActionRt::TryFiles { .. }
         ) && loc.gzip.unwrap_or(state.gzip);
     }
 

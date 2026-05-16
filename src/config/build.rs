@@ -402,6 +402,7 @@ fn build_location(
     let mut expires: Option<std::time::Duration> = None;
     let mut gzip: Option<bool> = None;
     let mut autoindex: bool = false;
+    let mut try_files: Option<Vec<TryFilesEntry>> = None;
     let mut auth_basic_realm: Option<String> = None;
     let mut auth_basic_user_file: Option<String> = None;
     let mut limit_req: Option<(String, u32)> = None;
@@ -500,7 +501,39 @@ fn build_location(
             }
             "limit_req_status" | "limit_conn_status" => None,
             "include" => None,
-            "index" | "try_files"
+            "try_files" => {
+                if d.args.len() < 2 {
+                    return Err(format!(
+                        "line {}: 'try_files' needs at least two arguments",
+                        d.line
+                    ));
+                }
+                let mut entries: Vec<TryFilesEntry> =
+                    Vec::with_capacity(d.args.len());
+                let last_i = d.args.len() - 1;
+                for (i, raw) in d.args.iter().enumerate() {
+                    if let Some(code) = raw.strip_prefix('=') {
+                        if i != last_i {
+                            return Err(format!(
+                                "line {}: '=N' status is only valid as the last 'try_files' entry",
+                                d.line
+                            ));
+                        }
+                        let n: u16 = code.parse().map_err(|_| {
+                            format!(
+                                "line {}: invalid status code '{raw}' in try_files",
+                                d.line
+                            )
+                        })?;
+                        entries.push(TryFilesEntry::Status(n));
+                    } else {
+                        entries.push(TryFilesEntry::Path(Template::parse(raw)));
+                    }
+                }
+                try_files = Some(entries);
+                None
+            }
+            "index"
             | "proxy_buffering" | "proxy_read_timeout"
             | "proxy_connect_timeout" | "proxy_send_timeout"
             | "proxy_next_upstream" | "proxy_hide_header"
@@ -523,17 +556,44 @@ fn build_location(
         }
     }
 
-    let action = match action {
-        Some(a) => a,
-        None => match server_root {
-            Some(r) => Action::Root { dir: r.to_string() },
-            None => {
+    // try_files takes precedence over a plain Root: the user-declared
+    // content directive becomes the root for the try_files probes.
+    let action = if let Some(entries) = try_files {
+        // Determine the root: location-level Root if present, else
+        // server-level cascade.
+        let root = match &action {
+            Some(Action::Root { dir }) => dir.clone(),
+            Some(other) => {
                 return Err(format!(
-                    "line {line}: location '{path}' has no action \
-                     (expected return, proxy_pass, root, or alias)"
-                ))
+                    "line {line}: 'try_files' in location '{path}' \
+                     cannot be combined with a content directive \
+                     ({other:?}); only 'root' is allowed alongside it"
+                ));
             }
-        },
+            None => match server_root {
+                Some(r) => r.to_string(),
+                None => {
+                    return Err(format!(
+                        "line {line}: 'try_files' in location '{path}' \
+                         needs a 'root' (in this location or at the server level)"
+                    ));
+                }
+            },
+        };
+        Action::TryFiles { root, entries }
+    } else {
+        match action {
+            Some(a) => a,
+            None => match server_root {
+                Some(r) => Action::Root { dir: r.to_string() },
+                None => {
+                    return Err(format!(
+                        "line {line}: location '{path}' has no action \
+                         (expected return, proxy_pass, root, or alias)"
+                    ))
+                }
+            },
+        }
     };
 
     if auth_basic_realm.is_some() && auth_basic_user_file.is_none() {

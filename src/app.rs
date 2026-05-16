@@ -131,6 +131,18 @@ pub enum ActionRt {
     },
     /// Render Prometheus metrics inline.
     Metrics,
+    /// `try_files` — try each candidate in order, fall back to the last
+    /// entry (which may itself be a path or a `=NNN` status).
+    TryFiles {
+        root: PathBuf,
+        entries: Vec<TryFilesEntryRt>,
+    },
+}
+
+#[derive(Clone)]
+pub enum TryFilesEntryRt {
+    Path(Template),
+    Status(u16),
 }
 
 /// Per-location proxy-cache configuration, resolved at config-build time.
@@ -460,6 +472,20 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                     }
                 }
                 Action::Metrics => ActionRt::Metrics,
+                Action::TryFiles { root, entries } => ActionRt::TryFiles {
+                    root: PathBuf::from(root),
+                    entries: entries
+                        .iter()
+                        .map(|e| match e {
+                            crate::config::TryFilesEntry::Path(t) => {
+                                TryFilesEntryRt::Path(t.clone())
+                            }
+                            crate::config::TryFilesEntry::Status(c) => {
+                                TryFilesEntryRt::Status(*c)
+                            }
+                        })
+                        .collect(),
+                },
             };
             // Cascade: server-level `add_header` directives are applied
             // first, then location-level. Last write wins, so a location-

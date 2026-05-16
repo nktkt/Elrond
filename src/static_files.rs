@@ -10,9 +10,10 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::debug;
 
-use crate::app::StaticKind;
+use crate::app::{StaticKind, TryFilesEntryRt};
 use crate::body::{full, text, ElrondBody};
 use crate::http_date;
+use crate::request_ctx::RequestCtx;
 
 /// Serve `req_path` from the configured `root`/`alias`, honoring `Range`,
 /// `If-None-Match`, and `HEAD` semantics. Path traversal is rejected at the
@@ -349,6 +350,83 @@ fn parse_single_range(raw: &str, size: u64) -> Option<(u64, u64)> {
         let end = end.min(size - 1);
         Some((start, end))
     }
+}
+
+/// Resolve a `try_files` location. Each non-final entry is treated as a
+/// path-existence check rooted at `root`; the first one that exists is
+/// served. The final entry is always honored — either as a path (served
+/// regardless) or as a `=NNN` status code.
+pub async fn try_files(
+    root: &Path,
+    entries: &[TryFilesEntryRt],
+    ctx: &RequestCtx<'_>,
+    req_headers: &hyper::HeaderMap,
+    req_method: &Method,
+) -> Response<ElrondBody> {
+    if entries.is_empty() {
+        return text(500, "500 Internal Server Error\n");
+    }
+    let last_i = entries.len() - 1;
+    for (i, entry) in entries.iter().enumerate() {
+        match entry {
+            TryFilesEntryRt::Status(code) => {
+                // Only the last entry may be a status; we've already
+                // refused others at parse time.
+                if i == last_i {
+                    return text(*code, format!("{} \n", *code));
+                }
+            }
+            TryFilesEntryRt::Path(tmpl) => {
+                let rendered = tmpl.render(ctx);
+                let rel = rendered.trim_start_matches('/');
+                let candidate = root.join(rel);
+                // Reject obvious traversal via component check before
+                // touching the filesystem.
+                if !components_safe(Path::new(rel)) {
+                    if i == last_i {
+                        return text(403, "403 Forbidden\n");
+                    } else {
+                        continue;
+                    }
+                }
+                match fs::metadata(&candidate).await {
+                    Ok(meta) if meta.is_file() => {
+                        return serve(
+                            root,
+                            &StaticKind::Root,
+                            &rendered,
+                            req_headers,
+                            req_method,
+                            false,
+                        )
+                        .await;
+                    }
+                    _ if i == last_i => {
+                        // Last entry: serve unconditionally (typical SPA
+                        // fallback `/index.html`). If it doesn't exist, the
+                        // underlying serve will produce 404 / 403.
+                        return serve(
+                            root,
+                            &StaticKind::Root,
+                            &rendered,
+                            req_headers,
+                            req_method,
+                            false,
+                        )
+                        .await;
+                    }
+                    _ => continue,
+                }
+            }
+        }
+    }
+    text(404, "404 Not Found\n")
+}
+
+fn components_safe(p: &Path) -> bool {
+    use std::path::Component;
+    p.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 fn mime_for(path: &Path) -> &'static str {
