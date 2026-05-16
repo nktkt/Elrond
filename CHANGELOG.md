@@ -2,6 +2,64 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.28.0] - 2026-05-16
+
+**Variable-driven `proxy_pass`.** 80 unit tests. Pre-alpha.
+
+Completes the `map` → upstream pattern. Routing decisions made via
+`map` / variables now flow straight into the proxy target — no more
+duplicated location blocks per pool.
+
+### Added
+
+- **`proxy_pass http://$pool;`** (or any template with `$`) is now
+  honored. At request time, Elrond renders the template, looks the
+  result up in the named-upstream map first, and falls back to
+  treating the rendered string as a direct address. Direct-address
+  results are memoized so the same target reuses its in-flight /
+  passive-health state across requests.
+- `app::ProxyTarget` enum (`Fixed(Arc<Balancer>)` / `Dynamic { … }`)
+  encapsulates the resolve-per-request logic.
+- Unresolvable targets (empty string, no match) return a clear
+  `502 Bad Gateway (empty / unresolvable proxy_pass)`.
+
+### Verified end-to-end
+
+```nginx
+upstream premium  { server 127.0.0.1:7001; server 127.0.0.1:7002; }
+upstream standard { server 127.0.0.1:7003; }
+
+map $arg_plan $pool {
+    "gold"    "premium";
+    "silver"  "premium";
+    default   "standard";
+}
+
+server {
+    listen 8080;
+    location / {
+        proxy_pass http://$pool;
+        add_header X-Pool $pool;
+    }
+}
+```
+
+```
+?plan=gold   → premium-A premium-A premium-B premium-B   (RR within premium)
+?plan=silver → premium-A premium-B                        (premium too)
+(no plan)    → standard standard standard                 (default)
+X-Pool       → premium                                    (header reflects routed pool)
+```
+
+### Known follow-ups
+
+- Ephemeral balancers for direct-address dynamic targets currently
+  have weight=1 / max_fails=1 / fail_timeout=10s defaults; not yet
+  configurable.
+- The ephemeral cache has no eviction; an attacker who can flood
+  distinct `$pool` values can grow it unbounded. Pair with
+  `limit_req` on a key the attacker controls.
+
 ## [0.27.0] - 2026-05-16
 
 **Deployment-ready package: production config + systemd unit + logrotate
@@ -1352,6 +1410,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.28.0]: https://github.com/nktkt/Elrond/releases/tag/v0.28.0
 [0.27.0]: https://github.com/nktkt/Elrond/releases/tag/v0.27.0
 [0.26.0]: https://github.com/nktkt/Elrond/releases/tag/v0.26.0
 [0.25.0]: https://github.com/nktkt/Elrond/releases/tag/v0.25.0

@@ -363,21 +363,27 @@ async fn handle(
                         .await
                     }
                     ActionRt::Proxy {
-                        balancer,
+                        target,
                         set_headers,
                         cache,
-                    } => {
-                        proxy::forward(
-                            balancer.clone(),
-                            set_headers.clone(),
-                            cache.clone(),
-                            loc.proxy_read_timeout,
-                            req,
-                            peer,
-                            &ctx,
-                        )
-                        .await
-                    }
+                    } => match target.resolve(&ctx) {
+                        Some(balancer) => {
+                            proxy::forward(
+                                balancer,
+                                set_headers.clone(),
+                                cache.clone(),
+                                loc.proxy_read_timeout,
+                                req,
+                                peer,
+                                &ctx,
+                            )
+                            .await
+                        }
+                        None => text(
+                            502,
+                            "502 Bad Gateway (empty / unresolvable proxy_pass)\n",
+                        ),
+                    },
                     ActionRt::Metrics => {
                         let body = metrics::render(crate::VERSION);
                         Response::builder()

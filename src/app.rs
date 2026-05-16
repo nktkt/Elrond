@@ -136,7 +136,7 @@ pub enum ActionRt {
         body: Template,
     },
     Proxy {
-        balancer: Arc<Balancer>,
+        target: ProxyTarget,
         set_headers: HeaderList,
         cache: Option<ProxyCache>,
     },
@@ -167,6 +167,83 @@ pub struct ProxyCache {
     pub key_template: Template,
     /// `(status codes (empty = any), ttl)` pairs.
     pub valid_rules: Vec<(Vec<u16>, Duration)>,
+}
+
+/// What `proxy_pass` resolves to at request time. Fixed targets are
+/// captured once at config-build (the common case). Dynamic targets —
+/// any `proxy_pass http://$something` — are rendered per request, looked
+/// up first in the named-upstream map, and synthesized + cached on first
+/// sight as a single-peer balancer for direct-address values.
+#[derive(Clone)]
+pub enum ProxyTarget {
+    Fixed(Arc<Balancer>),
+    Dynamic {
+        template: Template,
+        balancers: Arc<HashMap<String, Arc<Balancer>>>,
+        /// Memoizes ephemeral balancers built for direct addresses so the
+        /// state (in-flight counters, passive-health cooldown) survives
+        /// across requests resolving to the same target.
+        ephemeral: Arc<std::sync::RwLock<HashMap<String, Arc<Balancer>>>>,
+    },
+}
+
+impl ProxyTarget {
+    /// Resolve to a concrete balancer for this request. `None` is a hard
+    /// failure (empty / unparseable template) and the caller should return
+    /// a `502`.
+    pub fn resolve(&self, ctx: &crate::request_ctx::RequestCtx<'_>) -> Option<Arc<Balancer>> {
+        match self {
+            ProxyTarget::Fixed(b) => Some(b.clone()),
+            ProxyTarget::Dynamic {
+                template,
+                balancers,
+                ephemeral,
+            } => {
+                let rendered = template.render(ctx);
+                let host = rendered
+                    .strip_prefix("http://")
+                    .unwrap_or(&rendered)
+                    .trim_end_matches('/');
+                if host.is_empty() {
+                    return None;
+                }
+                if let Some(b) = balancers.get(host) {
+                    return Some(b.clone());
+                }
+                // Already-cached ephemeral?
+                if let Some(b) = ephemeral
+                    .read()
+                    .ok()
+                    .and_then(|m| m.get(host).cloned())
+                {
+                    return Some(b);
+                }
+                // Build a fresh single-peer balancer for this direct address
+                // and cache it so subsequent requests inherit the same
+                // in-flight / passive-health state.
+                let new_balancer = Arc::new(Balancer {
+                    name: host.to_string(),
+                    method: LbMethod::RoundRobin,
+                    peers: vec![Arc::new(Peer {
+                        addr: host.to_string(),
+                        weight: 1,
+                        max_fails: 1,
+                        fail_timeout: Duration::from_secs(10),
+                        backup: false,
+                        down: false,
+                        in_flight: AtomicU32::new(0),
+                        consecutive_failures: AtomicU32::new(0),
+                        failed_until_ms: AtomicU64::new(0),
+                    })],
+                    rr_counter: AtomicUsize::new(0),
+                });
+                if let Ok(mut w) = ephemeral.write() {
+                    w.insert(host.to_string(), new_balancer.clone());
+                }
+                Some(new_balancer)
+            }
+        }
+    }
 }
 
 pub enum StaticKind {
@@ -429,6 +506,10 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         }
         balancers.insert(up.name.clone(), balancer);
     }
+    // Shared Arc<HashMap> for dynamic `proxy_pass` resolution against the
+    // named-upstream table.
+    let balancers_arc: Arc<HashMap<String, Arc<Balancer>>> =
+        Arc::new(balancers.clone());
 
     // Build a flat `(addr, ServerState, cert?)` list first; group by addr
     // afterwards so multiple `server` blocks on the same port collapse
@@ -480,8 +561,17 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                     } else {
                         None
                     };
+                    let proxy_target = if target.contains('$') {
+                        ProxyTarget::Dynamic {
+                            template: Template::parse(target),
+                            balancers: balancers_arc.clone(),
+                            ephemeral: Arc::new(std::sync::RwLock::new(HashMap::new())),
+                        }
+                    } else {
+                        ProxyTarget::Fixed(resolve_proxy(target, &balancers))
+                    };
                     ActionRt::Proxy {
-                        balancer: resolve_proxy(target, &balancers),
+                        target: proxy_target,
                         set_headers: Arc::new(compile_headers(&loc.set_headers)?),
                         cache,
                     }
