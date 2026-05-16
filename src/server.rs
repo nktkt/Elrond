@@ -458,6 +458,20 @@ async fn handle(
             None => (text(404, "404 Not Found\n"), None),
         };
 
+    // Auto-advertise HTTP/3 on the matching UDP port, so clients that
+    // arrive via TCP+TLS can upgrade on a subsequent request. Done
+    // before `add_header` so an explicit `add_header Alt-Svc "..."`
+    // wins (apply_add_headers uses .insert which overwrites).
+    if state.scheme == "https" {
+        if let Some(port) = state.h3_advertised_port {
+            if let Ok(v) = HeaderValue::from_str(&format!(
+                "h3=\":{port}\"; ma=86400"
+            )) {
+                response.headers_mut().insert("alt-svc", v);
+            }
+        }
+    }
+
     let mut gzip_eligible = false;
     if let Some(loc) = matched {
         apply_add_headers(response.headers_mut(), &loc.add_headers, &ctx);

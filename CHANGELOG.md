@@ -2,6 +2,45 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.39.0] - 2026-05-16
+
+**Auto-`Alt-Svc` advertisement for HTTP/3.** 80 unit tests. Pre-alpha.
+
+Browsers and HTTP-clients that arrive over TCP/TLS can now discover
+the HTTP/3 endpoint and upgrade on a subsequent request, without the
+operator having to write `add_header Alt-Svc …` themselves.
+
+### Added
+
+- A listener that has any vhost with `listen … http3;` now emits
+  `Alt-Svc: h3=":<port>"; ma=86400` on every HTTPS (TCP/TLS)
+  response. The port advertised is the listener's own TCP/UDP port
+  (the QUIC endpoint binds the same number on UDP).
+- Per-listener: any vhost opting into `http3` is enough — all vhosts
+  on that address advertise Alt-Svc, matching how the QUIC endpoint
+  itself spans the whole listener.
+- Inserted before user-supplied `add_header`, so an explicit
+  `add_header Alt-Svc "<custom>";` still overrides the auto value.
+
+### Not advertised
+
+- Plain HTTP listeners (no TLS) — browsers ignore `Alt-Svc` on
+  non-secure origins, so emitting it would just be noise.
+- TLS listeners that do **not** have HTTP/3 enabled — would point at
+  a non-listening UDP port.
+- The HTTP/3 path itself doesn't currently re-advertise (the client
+  is already on h3); harmless, may be added later for very long-lived
+  clients that want to refresh `ma`.
+
+### Verified end-to-end
+
+```
+listen 8443 ssl http3;  →  alt-svc: h3=":8443"; ma=86400   ✓
+listen 8444 ssl;        →  (no alt-svc)                    ✓
+listen 8080;            →  (no alt-svc)                    ✓
+curl --http3            →  HTTP/3 200, body "h3-enabled"   ✓
+```
+
 ## [0.38.0] - 2026-05-16
 
 **HTTP/3 over QUIC (Phase 11).** 80 unit tests. Pre-alpha.
@@ -1880,6 +1919,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.39.0]: https://github.com/nktkt/Elrond/releases/tag/v0.39.0
 [0.38.0]: https://github.com/nktkt/Elrond/releases/tag/v0.38.0
 [0.37.0]: https://github.com/nktkt/Elrond/releases/tag/v0.37.0
 [0.36.0]: https://github.com/nktkt/Elrond/releases/tag/v0.36.0

@@ -84,6 +84,11 @@ pub struct ServerState {
     pub maps: Arc<Vec<crate::config::MapDecl>>,
     /// `client_max_body_size`: 0 means unlimited. Defaults to 1 MiB.
     pub client_max_body_size: usize,
+    /// `Some(port)` iff this server's listener has HTTP/3 enabled and
+    /// the TCP/TLS path should auto-advertise it via the `Alt-Svc`
+    /// response header. `None` on plain-HTTP listeners or when no
+    /// vhost on the address opted into HTTP/3.
+    pub h3_advertised_port: Option<u16>,
     exact_locs: Vec<LocationRt>,
     regex_locs: Vec<(regex::Regex, LocationRt)>,
     prefix_locs: Vec<LocationRt>,
@@ -563,6 +568,20 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
     let balancers_arc: Arc<HashMap<String, Arc<Balancer>>> =
         Arc::new(balancers.clone());
 
+    // Pre-compute which listen addresses opt into HTTP/3, so each
+    // ServerState built below can carry its listener's h3 advertise
+    // port (used to auto-emit `Alt-Svc: h3=":<port>"` on TCP/TLS
+    // responses).
+    let mut wants_h3_addrs: std::collections::HashSet<SocketAddr> =
+        std::collections::HashSet::new();
+    for s in &http.servers {
+        if s.http3 {
+            if let Some(addr) = s.listen {
+                wants_h3_addrs.insert(addr);
+            }
+        }
+    }
+
     // Build a flat `(addr, ServerState, cert?)` list first; group by addr
     // afterwards so multiple `server` blocks on the same port collapse
     // into a single listener with SNI multi-cert.
@@ -763,6 +782,13 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         };
 
         let scheme = if s.tls { "https" } else { "http" };
+        // h3 advertisement is per-listener: any vhost on this address
+        // enabling http3 means all vhosts on this address advertise it.
+        let h3_advertised_port = if wants_h3_addrs.contains(&addr) {
+            Some(addr.port())
+        } else {
+            None
+        };
         let state = Arc::new(ServerState {
             server_name: s.server_name.clone(),
             scheme,
@@ -773,6 +799,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             client_max_body_size: s
                 .client_max_body_size
                 .unwrap_or(DEFAULT_CLIENT_MAX_BODY_SIZE),
+            h3_advertised_port,
             exact_locs,
             regex_locs,
             prefix_locs,
@@ -835,15 +862,6 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             }
         }
     }
-    // For each listener that has any HTTP/3 vhost, remember that fact.
-    let mut wants_h3: HashMap<SocketAddr, bool> = HashMap::new();
-    for s in &http.servers {
-        if let Some(addr) = s.listen {
-            if s.http3 {
-                wants_h3.insert(addr, true);
-            }
-        }
-    }
     for cfg in listener_map.values_mut() {
         if !cfg.tls_paths.is_empty() {
             let protocols = protocols_by_addr
@@ -855,7 +873,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 })
                 .unwrap_or_default();
             cfg.tls = Some(crate::tls::build_server_config(&cfg.tls_paths, &protocols)?);
-            if wants_h3.get(&cfg.addr).copied().unwrap_or(false) {
+            if wants_h3_addrs.contains(&cfg.addr) {
                 cfg.h3_tls = Some(crate::tls::build_h3_server_config(&cfg.tls_paths)?);
             }
         }
