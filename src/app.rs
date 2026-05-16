@@ -225,7 +225,14 @@ impl ProxyTarget {
                 if host.is_empty() {
                     return None;
                 }
-                if let Some(b) = balancers.get(host) {
+                // Try the named-upstream map (which stores keys without a
+                // scheme prefix). Strip a leading scheme for lookup.
+                let bare = host
+                    .strip_prefix("http://")
+                    .or_else(|| host.strip_prefix("https://"))
+                    .unwrap_or(host)
+                    .trim_end_matches('/');
+                if let Some(b) = balancers.get(bare) {
                     return Some(b.clone());
                 }
                 // Already-cached ephemeral?
@@ -239,11 +246,19 @@ impl ProxyTarget {
                 // Build a fresh single-peer balancer for this direct address
                 // and cache it so subsequent requests inherit the same
                 // in-flight / passive-health state.
+                // Dynamic targets may carry their own scheme prefix.
+                let (scheme, addr) = if let Some(s) = host.strip_prefix("https://") {
+                    ("https", s.trim_end_matches('/'))
+                } else if let Some(s) = host.strip_prefix("http://") {
+                    ("http", s.trim_end_matches('/'))
+                } else {
+                    ("http", host)
+                };
                 let new_balancer = Arc::new(Balancer {
-                    name: host.to_string(),
+                    name: addr.to_string(),
                     method: LbMethod::RoundRobin,
                     peers: vec![Arc::new(Peer {
-                        addr: host.to_string(),
+                        addr: addr.to_string(),
                         weight: 1,
                         max_fails: 1,
                         fail_timeout: Duration::from_secs(10),
@@ -253,6 +268,7 @@ impl ProxyTarget {
                         consecutive_failures: AtomicU32::new(0),
                         failed_until_ms: AtomicU64::new(0),
                     })],
+                    scheme,
                     rr_counter: AtomicUsize::new(0),
                 });
                 if let Ok(mut w) = ephemeral.write() {
@@ -342,6 +358,8 @@ pub struct Balancer {
     pub name: String,
     pub method: LbMethod,
     pub peers: Vec<Arc<Peer>>,
+    /// `"http"` or `"https"` — derived from the `proxy_pass` URL scheme.
+    pub scheme: &'static str,
     rr_counter: AtomicUsize,
 }
 
@@ -517,6 +535,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             name: up.name.clone(),
             method: up.method,
             peers,
+            scheme: "http", // named upstream defaults to plain HTTP
             rr_counter: AtomicUsize::new(0),
         });
         if let Some(hc) = &up.health_check {
@@ -831,6 +850,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                     name: up.name.clone(),
                     method: up.method,
                     peers,
+                    scheme: "http",
                     rr_counter: AtomicUsize::new(0),
                 }),
             );
@@ -859,14 +879,23 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
 /// `proxy_pass <target>` — look up `target` as an upstream name, or treat it
 /// as a single direct address. Single-address peers get sensible health
 /// defaults (one failure tolerated, 10-second cooldown).
+///
+/// Recognized schemes:
+///   - `http://NAME`        — named upstream over plain HTTP.
+///   - `http://HOST:PORT`   — direct address, plain HTTP.
+///   - `https://HOST:PORT`  — direct address, HTTPS (TLS to the upstream).
 fn resolve_proxy(
     target: &str,
     balancers: &HashMap<String, Arc<Balancer>>,
 ) -> Arc<Balancer> {
-    let host = target
-        .strip_prefix("http://")
-        .unwrap_or(target)
-        .trim_end_matches('/');
+    let (scheme, rest) = if let Some(s) = target.strip_prefix("https://") {
+        ("https", s)
+    } else if let Some(s) = target.strip_prefix("http://") {
+        ("http", s)
+    } else {
+        ("http", target)
+    };
+    let host = rest.trim_end_matches('/');
 
     if let Some(b) = balancers.get(host) {
         return b.clone();
@@ -888,6 +917,7 @@ fn resolve_proxy(
         name: host.to_string(),
         method: LbMethod::RoundRobin,
         peers: vec![peer],
+        scheme,
         rr_counter: AtomicUsize::new(0),
     })
 }
@@ -909,6 +939,16 @@ mod tests {
             consecutive_failures: AtomicU32::new(0),
             failed_until_ms: AtomicU64::new(0),
         })
+    }
+
+    fn test_balancer(name: &str, method: LbMethod, peers: Vec<Arc<Peer>>) -> Balancer {
+        Balancer {
+            name: name.into(),
+            method,
+            peers,
+            scheme: "http",
+            rr_counter: AtomicUsize::new(0),
+        }
     }
 
     fn empty_user_vars() -> &'static std::collections::HashMap<String, String> {
@@ -941,6 +981,7 @@ mod tests {
             name: "t".into(),
             method: LbMethod::RoundRobin,
             peers: vec![peer("a", 2), peer("b", 1)],
+            scheme: "http",
             rr_counter: AtomicUsize::new(0),
         };
         let m = Method::GET;
@@ -962,6 +1003,7 @@ mod tests {
             name: "t".into(),
             method: LbMethod::IpHash,
             peers: vec![peer("a", 1), peer("b", 1), peer("c", 1)],
+            scheme: "http",
             rr_counter: AtomicUsize::new(0),
         };
         let m = Method::GET;
@@ -988,6 +1030,7 @@ mod tests {
             name: "t".into(),
             method: LbMethod::LeastConn,
             peers: vec![a.clone(), bp.clone()],
+            scheme: "http",
             rr_counter: AtomicUsize::new(0),
         };
         let m = Method::GET;
@@ -1009,6 +1052,7 @@ mod tests {
             name: "t".into(),
             method: LbMethod::RoundRobin,
             peers: vec![a, bp.clone()],
+            scheme: "http",
             rr_counter: AtomicUsize::new(0),
         };
         let m = Method::GET;
@@ -1041,6 +1085,7 @@ mod tests {
             name: "t".into(),
             method: LbMethod::RoundRobin,
             peers: vec![primary.clone(), backup.clone()],
+            scheme: "http",
             rr_counter: AtomicUsize::new(0),
         };
         let m = Method::GET;
@@ -1063,6 +1108,7 @@ mod tests {
             name: "t".into(),
             method: LbMethod::RoundRobin,
             peers: vec![downed, alive.clone()],
+            scheme: "http",
             rr_counter: AtomicUsize::new(0),
         };
         let m = Method::GET;

@@ -2,6 +2,56 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.32.0] - 2026-05-16
+
+**TLS upstream — `proxy_pass https://…`.** 80 unit tests. Pre-alpha.
+
+### Added
+
+- **`proxy_pass https://HOST:PORT;`** is now honored. Adds
+  `hyper-rustls` and `rustls-native-certs` deps; the proxy client is
+  now an `HttpsConnector<HttpConnector>` that auto-detects the URI
+  scheme and does the TLS handshake against the upstream's cert,
+  validated against the system trust store.
+- `Balancer.scheme` field — `"http"` for named upstreams and
+  `proxy_pass http://…`, `"https"` for `proxy_pass https://…`. The
+  scheme threads through to the per-request URI we hand hyper.
+- `https://` works for both fixed (`proxy_pass https://api.example.com`)
+  and dynamic (`proxy_pass https://$pool`) targets.
+
+### Verified end-to-end
+
+```nginx
+location / {
+    proxy_pass https://example.com;
+    proxy_set_header Host example.com;
+}
+```
+
+Going through Elrond reaches the real Cloudflare-fronted
+`example.com` over TLS:
+
+```
+$ curl -sI http://localhost:8080/
+HTTP/1.1 200 OK
+date: Sat, 16 May 2026 04:07:41 GMT
+content-type: text/html
+server: cloudflare
+last-modified: …
+```
+
+The full HTML body comes through (`<!doctype html><html lang="en">…`).
+
+### Known follow-ups
+
+- **`proxy_ssl_verify off;`** parsed but not honored — server cert
+  verification is always on against the system trust store. To trust
+  a self-signed upstream cert today, install it in the host's trust
+  store. Disable-flag plumbing is the next step.
+- **mTLS upstream** (`proxy_ssl_certificate` / `..._key`) parsed but
+  not honored. Adding per-location rustls `ClientConfig` overrides
+  comes after `proxy_ssl_verify`.
+
 ## [0.31.0] - 2026-05-16
 
 **`mirror` — fire-and-forget traffic shadowing.** 80 unit tests.
@@ -1564,6 +1614,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.32.0]: https://github.com/nktkt/Elrond/releases/tag/v0.32.0
 [0.31.0]: https://github.com/nktkt/Elrond/releases/tag/v0.31.0
 [0.30.0]: https://github.com/nktkt/Elrond/releases/tag/v0.30.0
 [0.29.0]: https://github.com/nktkt/Elrond/releases/tag/v0.29.0

@@ -15,6 +15,7 @@ use hyper::{Method, Request, Response, Uri};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use hyper_rustls::HttpsConnector;
 use tracing::{debug, warn};
 
 use std::time::Instant;
@@ -43,16 +44,48 @@ const HOP_BY_HOP: [&str; 8] = [
 /// pool should not loop forever on a flaky cluster.
 const MAX_ATTEMPTS: usize = 3;
 
-pub(crate) fn client() -> &'static Client<HttpConnector, ElrondBody> {
-    static CLIENT: OnceLock<Client<HttpConnector, ElrondBody>> = OnceLock::new();
+pub(crate) fn client() -> &'static Client<HttpsConnector<HttpConnector>, ElrondBody> {
+    static CLIENT: OnceLock<Client<HttpsConnector<HttpConnector>, ElrondBody>> =
+        OnceLock::new();
     CLIENT.get_or_init(|| {
-        let mut connector = HttpConnector::new();
-        connector.set_connect_timeout(Some(DEFAULT_PROXY_CONNECT_TIMEOUT));
-        connector.set_nodelay(true);
+        let mut http = HttpConnector::new();
+        http.set_connect_timeout(Some(DEFAULT_PROXY_CONNECT_TIMEOUT));
+        http.set_nodelay(true);
+        // Allow https:// URIs through this connector.
+        http.enforce_http(false);
+
+        let tls = build_client_tls_config();
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .wrap_connector(http);
+
         Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(30))
             .build(connector)
     })
+}
+
+/// Build a `rustls::ClientConfig` for proxied upstream TLS using the
+/// system trust store. v0.32.0 always verifies server certificates;
+/// `proxy_ssl_verify off;` is parsed but not yet honored.
+fn build_client_tls_config() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    let load = rustls_native_certs::load_native_certs();
+    for cert in load.certs {
+        let _ = roots.add(cert);
+    }
+    if !load.errors.is_empty() {
+        tracing::warn!(
+            "proxy TLS: {} system trust store errors (continuing with the certs that loaded)",
+            load.errors.len()
+        );
+    }
+    rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
 }
 
 /// Forward `req` through `balancer`. For idempotent methods (`GET`, `HEAD`,
@@ -119,7 +152,7 @@ pub async fn forward(
 
         metrics::record_proxy_attempt();
         let req2 = build_request(&parts, empty_body());
-        let attempt = forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx);
+        let attempt = forward_to_peer(&upstream_peer, balancer.scheme, &set_headers, req2, client_peer, ctx);
         match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {
             warn!("proxy: upstream '{}' read timed out after {:?}", upstream_peer.addr, effective_read);
             Err(())
@@ -173,7 +206,7 @@ async fn forward_once_with_incoming(
     let boxed = body.map_err(|e| Box::new(e) as BoxError).boxed();
     let req2 = Request::from_parts(parts, boxed);
     metrics::record_proxy_attempt();
-    let attempt = forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx);
+    let attempt = forward_to_peer(&upstream_peer, balancer.scheme, &set_headers, req2, client_peer, ctx);
     match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {
         warn!(
             "proxy: upstream '{}' read timed out after {:?}",
@@ -201,6 +234,7 @@ async fn forward_once_with_incoming(
 
 async fn forward_to_peer(
     peer: &Arc<Peer>,
+    upstream_scheme: &str,
     set_headers: &[(HeaderName, crate::template::Template)],
     req: Request<ElrondBody>,
     client_peer: SocketAddr,
@@ -214,7 +248,7 @@ async fn forward_to_peer(
         .path_and_query()
         .map(|p| p.as_str())
         .unwrap_or("/");
-    let uri: Uri = match format!("http://{upstream}{pq}").parse() {
+    let uri: Uri = match format!("{upstream_scheme}://{upstream}{pq}").parse() {
         Ok(u) => u,
         Err(e) => {
             warn!("proxy: invalid upstream uri for '{upstream}': {e}");
