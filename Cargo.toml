@@ -1,6 +1,6 @@
 [package]
 name = "elrond"
-version = "0.40.1"
+version = "0.40.2"
 edition = "2021"
 rust-version = "1.75"
 description = "A Rust-native Nginx alternative — reverse proxy, static serving, and load balancing"

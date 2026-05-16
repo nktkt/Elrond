@@ -8,7 +8,9 @@
 # and accept that runtime `user nobody;` won't work without first
 # mounting an /etc/passwd.
 
-ARG RUST_VERSION=1.83
+# Some transitive deps (e.g. hashbrown 0.17) require edition 2024,
+# which landed in Rust 1.85. Track stable here; raise as needed.
+ARG RUST_VERSION=1.86
 
 # ───────────────────────────── builder ───────────────────────────────
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder

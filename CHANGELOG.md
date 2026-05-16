@@ -2,6 +2,14 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.40.2] - 2026-05-16
+
+**Docker build fix (round 2).** Pin Dockerfile to Rust 1.86 — some
+transitive deps (hashbrown 0.17) require edition 2024 which landed
+in Rust 1.85. Validated locally: `docker run -p 8080:8080` boots,
+drops to uid=101 in the container, serves 200 to `/`, logs include
+`dropped privileges to uid=101 gid=101 (was root: true)`.
+
 ## [0.40.1] - 2026-05-16
 
 **Docker build fix.** Same code as v0.40.0; only the `.dockerignore`
@@ -1980,6 +1988,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.40.2]: https://github.com/nktkt/Elrond/releases/tag/v0.40.2
 [0.40.1]: https://github.com/nktkt/Elrond/releases/tag/v0.40.1
 [0.40.0]: https://github.com/nktkt/Elrond/releases/tag/v0.40.0
 [0.39.0]: https://github.com/nktkt/Elrond/releases/tag/v0.39.0
