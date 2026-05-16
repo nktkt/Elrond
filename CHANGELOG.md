@@ -2,6 +2,55 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.36.0] - 2026-05-16
+
+**mTLS to upstream — `proxy_ssl_certificate` / `_key`.** 80 unit tests.
+Pre-alpha.
+
+### Added
+
+- **`proxy_ssl_certificate <path>;`** and
+  **`proxy_ssl_certificate_key <path>;`** at location level. PEM-
+  encoded cert chain and matching private key are loaded at config
+  build, used to authenticate Elrond to the upstream over TLS
+  (service-to-service mTLS).
+- Combined with `proxy_ssl_verify`: client cert always presented; the
+  flag still controls whether Elrond verifies the upstream's server
+  cert. So all four combinations work — verify on or off, with or
+  without client cert.
+- **`proxy::ProxyClient`** — per-location HTTPS client (HTTP/1 + HTTP/2)
+  built once with the right rustls `ClientConfig` and wrapped in an
+  `Arc` on `LocationRt`. Reused for every request to that location.
+- Configuration validation: setting only one of `proxy_ssl_certificate`
+  / `proxy_ssl_certificate_key` is a hard config-load error pointing
+  at the offending line.
+
+### Verified
+
+```nginx
+location /mtls-required/ {
+    proxy_pass https://example.com;
+    proxy_ssl_certificate     /etc/elrond/clients/svc.crt;
+    proxy_ssl_certificate_key /etc/elrond/clients/svc.key;
+}
+```
+
+`elrond -t -c …` reports `config valid`. A config with only one of
+the two paths fails with:
+
+```
+elrond: config error: line 4: location '/' must set both
+'proxy_ssl_certificate' and 'proxy_ssl_certificate_key' (mTLS to
+upstream) or neither
+```
+
+### Known follow-ups
+
+- `proxy_ssl_trusted_certificate` (pin extra trust roots) parsed but
+  not yet honored.
+- `proxy_ssl_server_name` (override SNI sent to the upstream) parsed
+  but not yet honored — SNI currently derives from the URL host.
+
 ## [0.35.0] - 2026-05-16
 
 **`proxy_ssl_verify off;` — closes the v0.32 caveat.** 80 unit tests.
@@ -1756,6 +1805,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.36.0]: https://github.com/nktkt/Elrond/releases/tag/v0.36.0
 [0.35.0]: https://github.com/nktkt/Elrond/releases/tag/v0.35.0
 [0.34.0]: https://github.com/nktkt/Elrond/releases/tag/v0.34.0
 [0.33.0]: https://github.com/nktkt/Elrond/releases/tag/v0.33.0

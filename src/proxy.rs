@@ -44,6 +44,52 @@ const HOP_BY_HOP: [&str; 8] = [
 /// pool should not loop forever on a flaky cluster.
 const MAX_ATTEMPTS: usize = 3;
 
+/// A per-location HTTPS client (used for mTLS). Wraps a `hyper-util`
+/// legacy client built with a custom rustls `ClientConfig`.
+pub struct ProxyClient {
+    inner: Client<HttpsConnector<HttpConnector>, ElrondBody>,
+}
+
+impl ProxyClient {
+    /// Build a client that presents `cert_path`/`key_path` as a client
+    /// identity to upstreams. When `verify` is `true`, server certs are
+    /// validated against the system trust store; when `false`, any
+    /// server cert is accepted.
+    pub fn with_mtls(
+        cert_path: &std::path::Path,
+        key_path: &std::path::Path,
+        verify: bool,
+    ) -> Result<Self, String> {
+        let cert_chain = crate::tls::load_certs(cert_path)?;
+        let key = crate::tls::load_key(key_path)?;
+
+        let tls = if verify {
+            let mut roots = rustls::RootCertStore::empty();
+            let load = rustls_native_certs::load_native_certs();
+            for cert in load.certs {
+                let _ = roots.add(cert);
+            }
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_client_auth_cert(cert_chain, key)
+                .map_err(|e| format!("mTLS client config: {e}"))?
+        } else {
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(std::sync::Arc::new(NoVerify))
+                .with_client_auth_cert(cert_chain, key)
+                .map_err(|e| format!("mTLS client config: {e}"))?
+        };
+        Ok(ProxyClient {
+            inner: build_client(tls),
+        })
+    }
+
+    pub fn handle(&self) -> &Client<HttpsConnector<HttpConnector>, ElrondBody> {
+        &self.inner
+    }
+}
+
 pub(crate) fn client() -> &'static Client<HttpsConnector<HttpConnector>, ElrondBody> {
     static CLIENT: OnceLock<Client<HttpsConnector<HttpConnector>, ElrondBody>> =
         OnceLock::new();
@@ -156,14 +202,21 @@ pub async fn forward(
     cache: Option<ProxyCache>,
     read_timeout: Option<Duration>,
     ssl_verify: bool,
+    mtls_client: Option<Arc<ProxyClient>>,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
     let _ = (DEFAULT_PROXY_CONNECT_TIMEOUT,); // already applied via connector
     let effective_read = read_timeout.unwrap_or(DEFAULT_PROXY_READ_TIMEOUT);
-    let pick_client = || -> &'static Client<HttpsConnector<HttpConnector>, ElrondBody> {
-        if ssl_verify { client() } else { client_insecure() }
+    let pick_client = || -> &Client<HttpsConnector<HttpConnector>, ElrondBody> {
+        if let Some(c) = &mtls_client {
+            c.handle()
+        } else if ssl_verify {
+            client()
+        } else {
+            client_insecure()
+        }
     };
     let retry_safe = matches!(
         *req.method(),
@@ -187,6 +240,7 @@ pub async fn forward(
             cache,
             effective_read,
             ssl_verify,
+            mtls_client.clone(),
             req,
             client_peer,
             ctx,
@@ -256,12 +310,19 @@ async fn forward_once_with_incoming(
     cache: Option<ProxyCache>,
     effective_read: Duration,
     ssl_verify: bool,
+    mtls_client: Option<Arc<ProxyClient>>,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
     let _ = cache; // never-cache path (non-GET); kept for symmetry
-    let client_to_use = if ssl_verify { client() } else { client_insecure() };
+    let client_to_use = if let Some(c) = &mtls_client {
+        c.handle()
+    } else if ssl_verify {
+        client()
+    } else {
+        client_insecure()
+    };
     let upstream_peer = match balancer.pick(ctx) {
         Some(p) => p,
         None => {

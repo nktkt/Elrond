@@ -462,6 +462,8 @@ fn build_location(
     let mut auth_request: Option<Template> = None;
     let mut mirrors: Vec<Template> = Vec::new();
     let mut proxy_ssl_verify: bool = true;
+    let mut proxy_ssl_certificate: Option<String> = None;
+    let mut proxy_ssl_certificate_key: Option<String> = None;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -583,8 +585,15 @@ fn build_location(
                     parse_on_off(d.args.first().map(String::as_str), d.line)?;
                 None
             }
-            "proxy_ssl_certificate" | "proxy_ssl_certificate_key"
-            | "proxy_ssl_trusted_certificate" | "proxy_ssl_server_name"
+            "proxy_ssl_certificate" => {
+                proxy_ssl_certificate = Some(arg1(d)?);
+                None
+            }
+            "proxy_ssl_certificate_key" => {
+                proxy_ssl_certificate_key = Some(arg1(d)?);
+                None
+            }
+            "proxy_ssl_trusted_certificate" | "proxy_ssl_server_name"
             | "proxy_ssl_session_reuse" | "proxy_ssl_protocols"
             | "proxy_ssl_ciphers" => None,
             "include" => None,
@@ -689,6 +698,12 @@ fn build_location(
              'auth_basic_user_file'"
         ));
     }
+    if proxy_ssl_certificate.is_some() != proxy_ssl_certificate_key.is_some() {
+        return Err(format!(
+            "line {line}: location '{path}' must set both 'proxy_ssl_certificate' \
+             and 'proxy_ssl_certificate_key' (mTLS to upstream) or neither"
+        ));
+    }
 
     Ok(Location {
         kind,
@@ -712,6 +727,8 @@ fn build_location(
         auth_request,
         mirrors,
         proxy_ssl_verify,
+        proxy_ssl_certificate,
+        proxy_ssl_certificate_key,
     })
 }
 

@@ -264,6 +264,12 @@ pub struct Location {
     /// for HTTPS upstreams. Default: `on`. `off` is for self-signed
     /// upstreams in test/staging; **do not** ship it to production.
     pub proxy_ssl_verify: bool,
+    /// `proxy_ssl_certificate <path>;` — PEM cert chain presented to the
+    /// upstream as a client identity (mTLS). Pairs with
+    /// `proxy_ssl_certificate_key`.
+    pub proxy_ssl_certificate: Option<String>,
+    /// `proxy_ssl_certificate_key <path>;` — matching PEM private key.
+    pub proxy_ssl_certificate_key: Option<String>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

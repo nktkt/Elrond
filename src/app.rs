@@ -145,6 +145,10 @@ pub struct LocationRt {
     /// `true` to verify the upstream's TLS certificate (default);
     /// `false` accepts any cert (test / staging escape hatch).
     pub proxy_ssl_verify: bool,
+    /// `Some(client)` when this location has mTLS configured. The
+    /// client is built once at config-build time per unique
+    /// (cert, key, verify) tuple and shared across requests.
+    pub proxy_client: Option<Arc<crate::proxy::ProxyClient>>,
 }
 
 /// Process defaults applied when a directive does not specify otherwise.
@@ -699,6 +703,19 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 auth_request: loc.auth_request.clone(),
                 mirrors: Arc::new(loc.mirrors.clone()),
                 proxy_ssl_verify: loc.proxy_ssl_verify,
+                proxy_client: match (
+                    &loc.proxy_ssl_certificate,
+                    &loc.proxy_ssl_certificate_key,
+                ) {
+                    (Some(cert), Some(key)) => Some(Arc::new(
+                        crate::proxy::ProxyClient::with_mtls(
+                            std::path::Path::new(cert),
+                            std::path::Path::new(key),
+                            loc.proxy_ssl_verify,
+                        )?,
+                    )),
+                    _ => None,
+                },
             };
             match &loc.kind {
                 LocationKind::Exact => exact_locs.push(location_rt),
