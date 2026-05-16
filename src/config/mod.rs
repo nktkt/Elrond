@@ -402,12 +402,13 @@ mod tests {
     }
 
     #[test]
-    fn stream_rejects_udp_for_now() {
-        let err = parse_str(
+    fn stream_udp_listener_parses() {
+        let cfg = parse_str(
             "stream { server { listen 5000 udp; proxy_pass dns; } }",
         )
-        .unwrap_err();
-        assert!(err.contains("udp"), "got: {err}");
+        .unwrap();
+        let s = &cfg.stream.unwrap().servers[0];
+        assert!(s.udp);
     }
 
     #[test]

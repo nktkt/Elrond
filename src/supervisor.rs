@@ -28,6 +28,10 @@ struct HttpListener {
 
 struct StreamListener {
     addr: SocketAddr,
+    /// `true` for UDP listeners. Used by reload to decide whether the
+    /// transport can be swapped in place (same protocol) or requires a
+    /// fresh listener.
+    udp: bool,
     balancer_tx: watch::Sender<Arc<Balancer>>,
     shutdown_tx: watch::Sender<bool>,
     join: JoinHandle<()>,
@@ -49,8 +53,8 @@ impl Supervisor {
             http_listeners.push(spawn_http(cfg).await?);
         }
         let mut stream_listeners = Vec::with_capacity(runtime.stream_servers.len());
-        for (addr, balancer) in runtime.stream_servers {
-            stream_listeners.push(spawn_stream(addr, balancer).await?);
+        for (addr, balancer, udp) in runtime.stream_servers {
+            stream_listeners.push(spawn_stream(addr, balancer, udp).await?);
         }
         Ok(Self {
             config_path,
@@ -151,12 +155,24 @@ impl Supervisor {
         self.http_listeners = kept;
     }
 
-    async fn reload_stream(&mut self, new: Vec<(SocketAddr, Arc<Balancer>)>) {
-        let mut wanted: HashMap<SocketAddr, Arc<Balancer>> = new.into_iter().collect();
+    async fn reload_stream(&mut self, new: Vec<(SocketAddr, Arc<Balancer>, bool)>) {
+        let mut wanted: HashMap<SocketAddr, (Arc<Balancer>, bool)> = new
+            .into_iter()
+            .map(|(a, b, u)| (a, (b, u)))
+            .collect();
 
         let mut kept = Vec::with_capacity(self.stream_listeners.len());
         for l in self.stream_listeners.drain(..) {
-            if let Some(new_balancer) = wanted.remove(&l.addr) {
+            if let Some((new_balancer, new_udp)) = wanted.remove(&l.addr) {
+                if new_udp != l.udp {
+                    warn!(
+                        "reload: stream listener {} changed transport (TCP↔UDP) \
+                         — restart Elrond to apply",
+                        l.addr
+                    );
+                    kept.push(l);
+                    continue;
+                }
                 if l.balancer_tx.send(new_balancer).is_err() {
                     warn!("reload: stream listener on {} has gone away", l.addr);
                 }
@@ -170,10 +186,13 @@ impl Supervisor {
                 });
             }
         }
-        for (addr, balancer) in wanted {
-            match spawn_stream(addr, balancer).await {
+        for (addr, (balancer, udp)) in wanted {
+            match spawn_stream(addr, balancer, udp).await {
                 Ok(l) => {
-                    info!("reload: started new stream listener on {addr}");
+                    info!(
+                        "reload: started new stream listener on {addr} ({})",
+                        if udp { "udp" } else { "tcp" }
+                    );
                     kept.push(l);
                 }
                 Err(e) => error!("reload: could not bind stream {addr}: {e}"),
@@ -234,17 +253,31 @@ async fn spawn_http(cfg: ListenerCfg) -> std::io::Result<HttpListener> {
 async fn spawn_stream(
     addr: SocketAddr,
     balancer: Arc<Balancer>,
+    udp: bool,
 ) -> std::io::Result<StreamListener> {
-    let listener = TcpListener::bind(addr).await?;
     let (balancer_tx, balancer_rx) = watch::channel(balancer);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let join = tokio::spawn(async move {
-        if let Err(e) = stream::run(addr, listener, balancer_rx, shutdown_rx).await {
-            error!("stream listener on {addr}: {e}");
-        }
-    });
+
+    let join = if udp {
+        let sock = std::sync::Arc::new(tokio::net::UdpSocket::bind(addr).await?);
+        tokio::spawn(async move {
+            if let Err(e) = stream::run_udp(addr, sock, balancer_rx, shutdown_rx).await {
+                error!("udp stream listener on {addr}: {e}");
+            }
+        })
+    } else {
+        let listener = TcpListener::bind(addr).await?;
+        tokio::spawn(async move {
+            if let Err(e) =
+                stream::run(addr, listener, balancer_rx, shutdown_rx).await
+            {
+                error!("stream listener on {addr}: {e}");
+            }
+        })
+    };
     Ok(StreamListener {
         addr,
+        udp,
         balancer_tx,
         shutdown_tx,
         join,

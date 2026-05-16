@@ -21,8 +21,9 @@ pub struct Runtime {
     /// same address are grouped into one [`ListenerCfg`] and routed by
     /// `Host` header.
     pub listeners: Vec<ListenerCfg>,
-    /// One entry per `stream` `server` block — TCP proxying.
-    pub stream_servers: Vec<(SocketAddr, Arc<Balancer>)>,
+    /// One entry per `stream` `server` block. The `bool` is `true` for
+    /// UDP listeners (`listen ... udp;`), `false` for TCP.
+    pub stream_servers: Vec<(SocketAddr, Arc<Balancer>, bool)>,
 }
 
 /// All the state a single HTTP listener needs.
@@ -823,7 +824,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         .collect();
 
     // Build stream listeners.
-    let mut stream_servers: Vec<(SocketAddr, Arc<Balancer>)> = Vec::new();
+    let mut stream_servers: Vec<(SocketAddr, Arc<Balancer>, bool)> = Vec::new();
     if let Some(stream) = &cfg.stream {
         let mut stream_balancers: HashMap<String, Arc<Balancer>> = HashMap::new();
         for up in &stream.upstreams {
@@ -863,7 +864,11 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 .proxy_pass
                 .as_ref()
                 .ok_or("a stream 'server' is missing 'proxy_pass'")?;
-            stream_servers.push((addr, resolve_proxy(target, &stream_balancers)));
+            stream_servers.push((
+                addr,
+                resolve_proxy(target, &stream_balancers),
+                s.udp,
+            ));
         }
     }
 

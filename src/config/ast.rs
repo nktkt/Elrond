@@ -25,6 +25,10 @@ pub struct Stream {
 pub struct StreamServer {
     pub listen: Option<SocketAddr>,
     pub proxy_pass: Option<String>,
+    /// `true` when `listen ... udp;` was specified. v0.33.0 implements
+    /// stateless UDP relay (one client packet → one upstream packet →
+    /// one reply back to the client).
+    pub udp: bool,
 }
 
 #[derive(Debug, Default)]

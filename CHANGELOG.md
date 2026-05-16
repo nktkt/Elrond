@@ -2,6 +2,59 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.33.0] - 2026-05-16
+
+**UDP `stream` proxy.** 80 unit tests. Pre-alpha.
+
+### Added
+
+- **`listen <port> udp;`** in a `stream` `server` block. Stateless
+  request/response relay: each client datagram is forwarded to a
+  balancer-selected upstream, and the upstream's reply is sent back to
+  the original client address.
+- Per-exchange ephemeral upstream socket (no NAT-style session table)
+  with a 5-second reply timeout. Suitable for DNS / syslog / metrics
+  ingestion — long-lived UDP flows (QUIC, RTP) are out of scope.
+- Reuses the existing `Balancer` / passive-health machinery (`ip_hash`,
+  `max_fails` / `fail_timeout`, `backup`, `down` all apply); UDP packet
+  counts feed the existing stream metrics
+  (`elrond_stream_connections_accepted_total`,
+  `_bytes_client_to_upstream_total`, `_bytes_upstream_to_client_total`,
+  `_active_connections`).
+- Listener log line now distinguishes `tcp://` vs `udp://`.
+
+### Verified end-to-end
+
+```nginx
+stream {
+    upstream dns_backend { server 127.0.0.1:19000; }
+    server { listen 18000 udp; proxy_pass dns_backend; }
+}
+```
+
+Against a Python UDP echo on `127.0.0.1:19000`:
+
+```
+sendto :18000 b"hello"  → reply b"echo:hello"
+sendto :18000 b"world"  → reply b"echo:world"
+
+/metrics →
+  elrond_stream_connections_accepted_total      2
+  elrond_stream_bytes_client_to_upstream_total 10
+  elrond_stream_bytes_upstream_to_client_total 20
+  elrond_stream_active_connections              0
+
+log: stream listening on udp://0.0.0.0:18000
+```
+
+### Known limitations
+
+- Stateless: each datagram is independent (no session affinity beyond
+  `ip_hash`).
+- No source-IP spoofing (the upstream sees the proxy's IP). Adding
+  `proxy_bind` is a follow-up.
+- No PROXY-protocol UDP encapsulation.
+
 ## [0.32.0] - 2026-05-16
 
 **TLS upstream — `proxy_pass https://…`.** 80 unit tests. Pre-alpha.
@@ -1614,6 +1667,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.33.0]: https://github.com/nktkt/Elrond/releases/tag/v0.33.0
 [0.32.0]: https://github.com/nktkt/Elrond/releases/tag/v0.32.0
 [0.31.0]: https://github.com/nktkt/Elrond/releases/tag/v0.31.0
 [0.30.0]: https://github.com/nktkt/Elrond/releases/tag/v0.30.0

@@ -224,11 +224,7 @@ fn build_stream_server(dirs: &[Directive]) -> Result<StreamServer, String> {
                     ));
                 }
                 if d.args.iter().any(|x| x == "udp") {
-                    return Err(format!(
-                        "line {}: 'listen ... udp' is not supported yet \
-                         (UDP stream proxying is on the roadmap)",
-                        d.line
-                    ));
+                    server.udp = true;
                 }
                 server.listen = Some(parse_listen(&a, d.line)?);
             }
