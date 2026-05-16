@@ -35,6 +35,11 @@ pub struct ListenerCfg {
     /// `Some(_)` iff this is a TLS listener. The `ServerConfig` carries
     /// the multi-cert SNI resolver.
     pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// `Some(_)` iff at least one vhost on this address opted into
+    /// HTTP/3 (via `listen ... http3;`). Built with ALPN `h3` and
+    /// TLS 1.3 only. The supervisor uses it to spawn a QUIC endpoint
+    /// on the same UDP port.
+    pub h3_tls: Option<Arc<rustls::ServerConfig>>,
     /// Cert / key paths so the supervisor can re-read on `SIGHUP`. One
     /// entry per cert configured on this listener.
     pub tls_paths: Vec<crate::tls::CertEntry>,
@@ -792,6 +797,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 addr,
                 vhosts: Vec::new(),
                 tls: None,
+                h3_tls: None,
                 tls_paths: Vec::new(),
             }
         });
@@ -829,6 +835,15 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             }
         }
     }
+    // For each listener that has any HTTP/3 vhost, remember that fact.
+    let mut wants_h3: HashMap<SocketAddr, bool> = HashMap::new();
+    for s in &http.servers {
+        if let Some(addr) = s.listen {
+            if s.http3 {
+                wants_h3.insert(addr, true);
+            }
+        }
+    }
     for cfg in listener_map.values_mut() {
         if !cfg.tls_paths.is_empty() {
             let protocols = protocols_by_addr
@@ -840,6 +855,9 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 })
                 .unwrap_or_default();
             cfg.tls = Some(crate::tls::build_server_config(&cfg.tls_paths, &protocols)?);
+            if wants_h3.get(&cfg.addr).copied().unwrap_or(false) {
+                cfg.h3_tls = Some(crate::tls::build_h3_server_config(&cfg.tls_paths)?);
+            }
         }
     }
     let listeners: Vec<ListenerCfg> = order

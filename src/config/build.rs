@@ -288,6 +288,10 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
                 if d.args.iter().any(|x| x == "ssl") {
                     server.tls = true;
                 }
+                if d.args.iter().any(|x| x == "http3" || x == "quic") {
+                    server.tls = true;
+                    server.http3 = true;
+                }
                 server.listen = Some(parse_listen(&a, d.line)?);
             }
             "server_name" => server.server_name = d.args.first().cloned(),

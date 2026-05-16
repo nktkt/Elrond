@@ -13,7 +13,20 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::app::{self, Balancer, ListenerCfg};
-use crate::{config, server, stream};
+use crate::{config, http3, server, stream};
+
+/// An HTTP/3 endpoint bound on a UDP port. The QUIC endpoint reads the
+/// current `ListenerCfg` snapshot at every accept just like the TCP/TLS
+/// side, so vhost changes from `SIGHUP` reload reach new connections.
+struct H3Listener {
+    addr: SocketAddr,
+    /// `Some` if the next reload needs to push a fresh acceptor (TLS
+    /// certs swapped). We don't currently swap quinn endpoints in
+    /// place — cert hot-reload via `SIGHUP` reaches the TLS HTTP/1+2
+    /// listener; for HTTP/3, certs are picked up at process restart.
+    shutdown_tx: watch::Sender<bool>,
+    join: JoinHandle<()>,
+}
 
 struct HttpListener {
     addr: SocketAddr,
@@ -41,6 +54,7 @@ pub struct Supervisor {
     config_path: PathBuf,
     http_listeners: Vec<HttpListener>,
     stream_listeners: Vec<StreamListener>,
+    h3_listeners: Vec<H3Listener>,
 }
 
 impl Supervisor {
@@ -56,15 +70,33 @@ impl Supervisor {
         for (addr, balancer, udp) in runtime.stream_servers {
             stream_listeners.push(spawn_stream(addr, balancer, udp).await?);
         }
+        let mut h3_listeners: Vec<H3Listener> = Vec::new();
+        // Walk the http listeners we just built. For any with h3_tls
+        // configured, spawn a sibling QUIC endpoint on the same UDP port.
+        for l in &http_listeners {
+            // Grab the current ListenerCfg snapshot from the watch sender.
+            let cfg_snapshot = l.cfg_tx.subscribe().borrow().clone();
+            if cfg_snapshot.h3_tls.is_some() {
+                match spawn_h3(cfg_snapshot, l.cfg_tx.subscribe()).await {
+                    Ok(h) => h3_listeners.push(h),
+                    Err(e) => {
+                        error!("failed to start HTTP/3 listener on {}: {e}", l.addr);
+                    }
+                }
+            }
+        }
         Ok(Self {
             config_path,
             http_listeners,
             stream_listeners,
+            h3_listeners,
         })
     }
 
     pub fn listener_count(&self) -> usize {
-        self.http_listeners.len() + self.stream_listeners.len()
+        self.http_listeners.len()
+            + self.stream_listeners.len()
+            + self.h3_listeners.len()
     }
 
     pub async fn reload(&mut self) {
@@ -208,10 +240,16 @@ impl Supervisor {
         for l in &self.stream_listeners {
             let _ = l.shutdown_tx.send(true);
         }
+        for l in &self.h3_listeners {
+            let _ = l.shutdown_tx.send(true);
+        }
         for l in self.http_listeners {
             let _ = l.join.await;
         }
         for l in self.stream_listeners {
+            let _ = l.join.await;
+        }
+        for l in self.h3_listeners {
             let _ = l.join.await;
         }
     }
@@ -245,6 +283,29 @@ async fn spawn_http(cfg: ListenerCfg) -> std::io::Result<HttpListener> {
         addr,
         cfg_tx,
         tls_tx,
+        shutdown_tx,
+        join,
+    })
+}
+
+async fn spawn_h3(
+    cfg: Arc<ListenerCfg>,
+    cfg_rx: watch::Receiver<Arc<ListenerCfg>>,
+) -> Result<H3Listener, String> {
+    let rustls_cfg = cfg
+        .h3_tls
+        .clone()
+        .ok_or("listener has no h3_tls configured")?;
+    let quinn_cfg = http3::quinn_server_config(rustls_cfg)?;
+    let addr = cfg.addr;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let join = tokio::spawn(async move {
+        if let Err(e) = http3::run(addr, quinn_cfg, cfg_rx, shutdown_rx).await {
+            error!("http3 listener on {addr}: {e}");
+        }
+    });
+    Ok(H3Listener {
+        addr,
         shutdown_tx,
         join,
     })

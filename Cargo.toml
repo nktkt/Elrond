@@ -1,6 +1,6 @@
 [package]
 name = "elrond"
-version = "0.37.0"
+version = "0.38.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A Rust-native Nginx alternative — reverse proxy, static serving, and load balancing"
@@ -31,6 +31,9 @@ flate2 = "1"
 bcrypt = "0.16"
 base64 = "0.22"
 regex = "1"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
 
 [profile.release]
 lto = "thin"

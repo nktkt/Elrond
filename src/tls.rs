@@ -106,6 +106,39 @@ pub fn build_server_config(
     Ok(Arc::new(cfg))
 }
 
+/// Build a `rustls::ServerConfig` for HTTP/3 / QUIC: TLS 1.3 only,
+/// ALPN = `h3`. Shares the same multi-cert SNI resolver as
+/// [`build_server_config`].
+pub fn build_h3_server_config(
+    entries: &[CertEntry],
+) -> Result<Arc<rustls::ServerConfig>, String> {
+    if entries.is_empty() {
+        return Err("no TLS certificates configured for this HTTP/3 listener".into());
+    }
+    let mut by_name: HashMap<String, Arc<CertifiedKey>> = HashMap::new();
+    let mut default: Option<Arc<CertifiedKey>> = None;
+    for e in entries {
+        let ck = build_certified(e)?;
+        if default.is_none() {
+            default = Some(ck.clone());
+        }
+        if let Some(name) = &e.server_name {
+            by_name.insert(name.to_ascii_lowercase(), ck);
+        }
+    }
+    let default = default.expect("non-empty entries always set default");
+    let resolver = Arc::new(SniResolver { by_name, default });
+
+    // QUIC mandates TLS 1.3.
+    let mut cfg = rustls::ServerConfig::builder_with_protocol_versions(&[
+        &rustls::version::TLS13,
+    ])
+    .with_no_client_auth()
+    .with_cert_resolver(resolver);
+    cfg.alpn_protocols = vec![b"h3".to_vec()];
+    Ok(Arc::new(cfg))
+}
+
 /// Backwards-compatible single-cert builder: equivalent to one `CertEntry`
 /// with no `server_name` (acts as the default).
 #[allow(dead_code)]

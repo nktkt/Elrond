@@ -179,6 +179,9 @@ pub struct Server {
     /// `true` if `listen ... ssl;` was specified. Requires `ssl_certificate`
     /// and `ssl_certificate_key`.
     pub tls: bool,
+    /// `true` if `listen ... http3;` (or `quic`) was specified. Implies
+    /// TLS — HTTP/3 only runs over QUIC.
+    pub http3: bool,
     pub ssl_certificate: Option<String>,
     pub ssl_certificate_key: Option<String>,
     /// Allowed TLS protocol versions. Empty = rustls default (TLS 1.2 +

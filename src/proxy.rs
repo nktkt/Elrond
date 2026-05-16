@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty};
-use hyper::body::Incoming;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::request::Parts;
 use hyper::{Method, Request, Response, Uri};
@@ -203,7 +202,7 @@ pub async fn forward(
     read_timeout: Option<Duration>,
     ssl_verify: bool,
     mtls_client: Option<Arc<ProxyClient>>,
-    req: Request<Incoming>,
+    req: Request<ElrondBody>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
@@ -311,7 +310,7 @@ async fn forward_once_with_incoming(
     effective_read: Duration,
     ssl_verify: bool,
     mtls_client: Option<Arc<ProxyClient>>,
-    req: Request<Incoming>,
+    req: Request<ElrondBody>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
@@ -333,9 +332,7 @@ async fn forward_once_with_incoming(
     let _guard = upstream_peer.enter();
 
     let _captured_headers = req.headers().clone();
-    let (parts, body) = req.into_parts();
-    let boxed = body.map_err(|e| Box::new(e) as BoxError).boxed();
-    let req2 = Request::from_parts(parts, boxed);
+    let req2 = req;
     metrics::record_proxy_attempt();
     let attempt = forward_to_peer(&upstream_peer, balancer.scheme, client_to_use, &set_headers, req2, client_peer, ctx);
     match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {

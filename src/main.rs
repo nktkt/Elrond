@@ -9,6 +9,7 @@ mod cache;
 mod config;
 mod gzip;
 mod health;
+mod http3;
 mod http_date;
 mod limit;
 mod logging;

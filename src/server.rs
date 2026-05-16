@@ -402,6 +402,17 @@ async fn handle(
                         cache,
                     } => match target.resolve(&ctx) {
                         Some(balancer) => {
+                            // Convert the hyper `Incoming` body to our boxed
+                            // `ElrondBody` so the proxy chain is body-type
+                            // agnostic (HTTP/3 uses the same forward path).
+                            use http_body_util::BodyExt;
+                            let (rparts, rbody) = req.into_parts();
+                            let boxed: crate::body::ElrondBody = rbody
+                                .map_err(|e| {
+                                    Box::new(e) as crate::body::BoxError
+                                })
+                                .boxed();
+                            let req_b = hyper::Request::from_parts(rparts, boxed);
                             proxy::forward(
                                 balancer,
                                 set_headers.clone(),
@@ -409,7 +420,7 @@ async fn handle(
                                 loc.proxy_read_timeout,
                                 loc.proxy_ssl_verify,
                                 loc.proxy_client.clone(),
-                                req,
+                                req_b,
                                 peer,
                                 &ctx,
                             )
