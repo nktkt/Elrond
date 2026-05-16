@@ -104,7 +104,7 @@ async fn main() -> ExitCode {
         println!(
             "config '{}' is valid: {} http + {} stream server block(s)",
             config_path.display(),
-            runtime.servers.len(),
+            runtime.listeners.len(),
             runtime.stream_servers.len()
         );
         return ExitCode::SUCCESS;

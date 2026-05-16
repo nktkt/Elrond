@@ -1,10 +1,22 @@
-//! TLS setup: load PEM-encoded certificate chains and private keys, then
-//! build a `rustls::ServerConfig` ready to wrap accepted TCP streams.
+//! TLS setup: load PEM-encoded certificate chains and private keys, build a
+//! `rustls::ServerConfig` that can host multiple certificates and resolve
+//! them by SNI.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
+
+/// One entry in the resolver: a parsed certificate / key pair, optionally
+/// scoped to a specific SNI server name.
+pub struct CertEntry {
+    pub server_name: Option<String>,
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+}
 
 /// Load a PEM-encoded certificate chain.
 pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
@@ -27,7 +39,7 @@ pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
     Ok(out)
 }
 
-/// Load a PEM-encoded private key (PKCS#8, RSA, or SEC1).
+/// Load a PEM-encoded private key (PKCS#8, PKCS#1 RSA, or SEC1).
 pub fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, String> {
     let f = std::fs::File::open(path)
         .map_err(|e| format!("cannot open key '{}': {e}", path.display()))?;
@@ -37,31 +49,89 @@ pub fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, String> {
         .ok_or_else(|| format!("no private key in '{}'", path.display()))
 }
 
-/// Build a `rustls::ServerConfig` for one server block, with ALPN advertising
-/// only `http/1.1` (HTTP/2 over TLS is a later phase).
-pub fn server_config(
-    cert_path: &Path,
-    key_path: &Path,
+/// Compile a single `CertEntry` into a `CertifiedKey`.
+fn build_certified(entry: &CertEntry) -> Result<Arc<CertifiedKey>, String> {
+    let chain = load_certs(&entry.cert_path)?;
+    let key_der = load_key(&entry.key_path)?;
+    let signing = rustls::crypto::ring::sign::any_supported_type(&key_der)
+        .map_err(|e| format!("invalid key '{}': {e}", entry.key_path.display()))?;
+    Ok(Arc::new(CertifiedKey::new(chain, signing)))
+}
+
+/// Build a `rustls::ServerConfig` for a listener that may host several
+/// certificates keyed by SNI. The **first** entry serves as the default
+/// when the client offers no SNI or an unknown name.
+pub fn build_server_config(
+    entries: &[CertEntry],
 ) -> Result<Arc<rustls::ServerConfig>, String> {
-    let certs = load_certs(cert_path)?;
-    let key = load_key(key_path)?;
+    if entries.is_empty() {
+        return Err("no TLS certificates configured for this listener".into());
+    }
+    let mut by_name: HashMap<String, Arc<CertifiedKey>> = HashMap::new();
+    let mut default: Option<Arc<CertifiedKey>> = None;
+    for e in entries {
+        let ck = build_certified(e)?;
+        if default.is_none() {
+            default = Some(ck.clone());
+        }
+        if let Some(name) = &e.server_name {
+            by_name.insert(name.to_ascii_lowercase(), ck);
+        }
+    }
+    let default = default.expect("non-empty entries always set default");
+    let resolver = Arc::new(SniResolver { by_name, default });
     let mut cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("rustls server config: {e}"))?;
-    // Offer HTTP/2 first, then fall back to HTTP/1.1. Clients that don't
-    // know h2 (e.g. older curl) negotiate http/1.1.
+        .with_cert_resolver(resolver);
+    // Offer HTTP/2 first, fall back to HTTP/1.1.
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(cfg))
 }
 
+/// Backwards-compatible single-cert builder: equivalent to one `CertEntry`
+/// with no `server_name` (acts as the default).
+pub fn server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<Arc<rustls::ServerConfig>, String> {
+    build_server_config(&[CertEntry {
+        server_name: None,
+        cert_path: cert_path.to_path_buf(),
+        key_path: key_path.to_path_buf(),
+    }])
+}
+
+/// rustls cert resolver: pick by SNI server name, fall back to default.
+struct SniResolver {
+    by_name: HashMap<String, Arc<CertifiedKey>>,
+    default: Arc<CertifiedKey>,
+}
+
+impl std::fmt::Debug for SniResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SniResolver")
+            .field("names", &self.by_name.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl ResolvesServerCert for SniResolver {
+    fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        if let Some(name) = hello.server_name() {
+            let key = name.to_ascii_lowercase();
+            if let Some(ck) = self.by_name.get(&key) {
+                return Some(ck.clone());
+            }
+        }
+        Some(self.default.clone())
+    }
+}
+
 /// Install the default crypto provider exactly once at process start.
-/// rustls 0.23 requires an explicit provider; we use the `ring` backend.
 pub fn install_crypto_provider() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        // Ignore the result: a duplicate install error is harmless.
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }

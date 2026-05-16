@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
-use crate::app::{ActionRt, LocationRt, ServerState};
+use crate::app::{ActionRt, ListenerCfg, LocationRt, ServerState};
 use crate::body::{full, text, ElrondBody};
 use crate::gzip;
 use crate::metrics;
@@ -33,16 +33,24 @@ pub async fn run(
     addr: SocketAddr,
     listener: TcpListener,
     tls_rx: Option<watch::Receiver<Arc<tokio_rustls::TlsAcceptor>>>,
-    state_rx: watch::Receiver<Arc<ServerState>>,
+    cfg_rx: watch::Receiver<Arc<ListenerCfg>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let scheme = if tls_rx.is_some() { "https" } else { "http" };
     {
-        let s = state_rx.borrow();
-        if let Some(name) = &s.server_name {
-            info!("listening on {scheme}://{addr} (server_name {name})");
-        } else {
+        let cfg = cfg_rx.borrow();
+        let names: Vec<&str> = cfg
+            .vhosts
+            .iter()
+            .filter_map(|v| v.server_name.as_deref())
+            .collect();
+        if names.is_empty() {
             info!("listening on {scheme}://{addr}");
+        } else {
+            info!(
+                "listening on {scheme}://{addr} (vhosts: {})",
+                names.join(", ")
+            );
         }
     }
 
@@ -60,7 +68,7 @@ pub async fn run(
                 };
 
                 metrics::record_conn_accepted();
-                let state = state_rx.borrow().clone();
+                let cfg = cfg_rx.borrow().clone();
                 // Per-accept snapshot of the current TLS acceptor (if any).
                 // Supports cert hot-reload: a `SIGHUP` that pushes a new
                 // acceptor into `tls_rx` reaches subsequent connections
@@ -71,9 +79,10 @@ pub async fn run(
                 match tls_acceptor_for_this_conn {
                     None => {
                         let io = TokioIo::new(stream);
+                        let cfg = cfg.clone();
                         let service = service_fn(move |req| {
-                            let state = state.clone();
-                            async move { handle(state, req, peer).await }
+                            let cfg = cfg.clone();
+                            async move { handle_listener(cfg, req, peer).await }
                         });
                         let conn = http1::Builder::new().serve_connection(io, service);
                         let watched = graceful.watch(conn);
@@ -88,6 +97,7 @@ pub async fn run(
                         // TLS handshake is performed in the spawned task so the
                         // accept loop is not stalled. After handshake we branch
                         // on ALPN: h2 → HTTP/2, otherwise → HTTP/1.1.
+                        let cfg = cfg.clone();
                         tokio::spawn(async move {
                             let _conn_guard = metrics::ConnGuard::new();
                             match acceptor.accept(stream).await {
@@ -98,9 +108,12 @@ pub async fn run(
                                         .1
                                         .alpn_protocol()
                                         .map(|p| p.to_vec());
+                                    let cfg = cfg.clone();
                                     let service = service_fn(move |req| {
-                                        let state = state.clone();
-                                        async move { handle(state, req, peer).await }
+                                        let cfg = cfg.clone();
+                                        async move {
+                                            handle_listener(cfg, req, peer).await
+                                        }
                                     });
                                     let io = TokioIo::new(tls_stream);
                                     if alpn.as_deref() == Some(b"h2") {
@@ -145,6 +158,21 @@ pub async fn run(
     graceful.shutdown().await;
     info!("{addr}: stopped");
     Ok(())
+}
+
+async fn handle_listener(
+    cfg: Arc<ListenerCfg>,
+    req: Request<Incoming>,
+    peer: SocketAddr,
+) -> Result<Response<ElrondBody>, Infallible> {
+    // Pick the right vhost for this request based on its Host header.
+    let host_header = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().authority().map(|a| a.as_str()));
+    let state = cfg.pick_state(host_header).clone();
+    handle(state, req, peer).await
 }
 
 async fn handle(

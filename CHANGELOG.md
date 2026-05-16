@@ -2,6 +2,77 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.23.0] - 2026-05-16
+
+**SNI multi-cert + per-`Host` virtual hosts on shared listeners.** 80
+unit tests. Pre-alpha.
+
+Until v0.23 a single TLS port could only host one hostname — the single
+biggest production blocker. With this release, multiple `server` blocks
+on the same `listen` address are collapsed into one listener:
+
+- rustls picks the right certificate by SNI (`ResolvesServerCert`).
+- HTTP routing picks the right `ServerState` by `Host` header.
+- A `SIGHUP` reloads every certificate together via the existing TLS
+  hot-reload pipeline.
+
+### Added
+
+- **Multi-cert TLS listener.** Configure several `server { listen 443
+  ssl; server_name X; ssl_certificate …; ssl_certificate_key …; }`
+  blocks on the same port; Elrond serves the correct cert per SNI and
+  the correct vhost per `Host`.
+- **`tls::CertEntry`** + **`tls::build_server_config(entries)`** — the
+  multi-cert builder that wraps a custom `ResolvesServerCert` keyed by
+  lowercase SNI name, with a default cert when no name matches.
+- **`app::ListenerCfg`** — one entry per `listen` address, carrying a
+  `Vec<VirtualHost>` and the TLS `ServerConfig` (if any). The first
+  vhost is the default.
+- **`Host`-header routing** at request entry (`server::handle_listener`).
+  Port stripped, case-insensitive. Falls back to the first vhost when
+  nothing matches.
+- The listener startup log line now lists every vhost name:
+  `listening on https://0.0.0.0:8443 (vhosts: alpha.local, beta.local)`.
+
+### Changed
+
+- `Runtime::servers` → `Runtime::listeners`. Each entry is now a
+  `ListenerCfg` rather than a `(addr, state, tls)` tuple.
+- `server::run` takes a `watch::Receiver<Arc<ListenerCfg>>` and routes
+  per request.
+- `supervisor` bins per addr; cert hot-reload rebuilds the entire
+  SNI resolver in one shot, so adding / removing / renaming a vhost
+  via `SIGHUP` does the right thing in one go.
+
+### Refused early
+
+- Mixing TLS and plain HTTP `server` blocks on the **same** `listen`
+  address is now a config-load error rather than the previous "first
+  one wins" silent footgun.
+
+### Verified end-to-end
+
+Two `server` blocks on `listen 8443 ssl;` with distinct certs
+(`CN=alpha.local`, `CN=beta.local`):
+
+| `openssl s_client -servername`     | Cert returned       |
+|------------------------------------|---------------------|
+| `alpha.local`                      | `CN=alpha.local` ✅ |
+| `beta.local`                       | `CN=beta.local`  ✅ |
+| `unknown.example`                  | `CN=alpha.local` (default) ✅ |
+
+| `curl --resolve … https://…/`      | Body                              |
+|------------------------------------|-----------------------------------|
+| `alpha.local:8443`                 | `alpha-vhost from alpha.local:8443` |
+| `beta.local:8443`                  | `beta-vhost from beta.local:8443`   |
+
+### Known follow-ups
+
+- `listen … default_server` flag not yet parsed; first vhost is always
+  the default. Adding the flag is a small follow-up.
+- No SNI-name validation against the cert's SAN list at config-load
+  time. A cert mismatch surfaces at handshake time, not at startup.
+
 ## [0.22.0] - 2026-05-16
 
 **Operational basics: file logs, `SIGUSR1` reopen, PID file, systemd
@@ -1075,6 +1146,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.23.0]: https://github.com/nktkt/Elrond/releases/tag/v0.23.0
 [0.22.0]: https://github.com/nktkt/Elrond/releases/tag/v0.22.0
 [0.21.0]: https://github.com/nktkt/Elrond/releases/tag/v0.21.0
 [0.20.0]: https://github.com/nktkt/Elrond/releases/tag/v0.20.0

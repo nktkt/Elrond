@@ -17,22 +17,51 @@ pub type SharedState = Arc<ServerState>;
 pub type HeaderList = Arc<Vec<(HeaderName, Template)>>;
 
 pub struct Runtime {
-    /// One entry per HTTP `server` block. The optional [`TlsHandles`]
-    /// carries both the prebuilt `ServerConfig` and the on-disk paths the
-    /// supervisor needs to re-read on `SIGHUP`.
-    pub servers: Vec<(SocketAddr, SharedState, Option<TlsHandles>)>,
+    /// One entry per **listen address**. Multiple `server` blocks on the
+    /// same address are grouped into one [`ListenerCfg`] and routed by
+    /// `Host` header.
+    pub listeners: Vec<ListenerCfg>,
     /// One entry per `stream` `server` block — TCP proxying.
     pub stream_servers: Vec<(SocketAddr, Arc<Balancer>)>,
 }
 
-/// Everything the supervisor needs to know about a TLS listener:
-/// the live `ServerConfig` plus the certificate / key paths so it can
-/// rebuild on reload.
-#[derive(Clone)]
-pub struct TlsHandles {
-    pub server_config: Arc<rustls::ServerConfig>,
-    pub cert_path: PathBuf,
-    pub key_path: PathBuf,
+/// All the state a single HTTP listener needs.
+pub struct ListenerCfg {
+    pub addr: SocketAddr,
+    /// All virtual hosts on this listener. The first one is the default
+    /// (served when no `Host` header matches).
+    pub vhosts: Vec<VirtualHost>,
+    /// `Some(_)` iff this is a TLS listener. The `ServerConfig` carries
+    /// the multi-cert SNI resolver.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// Cert / key paths so the supervisor can re-read on `SIGHUP`. One
+    /// entry per cert configured on this listener.
+    pub tls_paths: Vec<crate::tls::CertEntry>,
+}
+
+/// One virtual host on a listener.
+pub struct VirtualHost {
+    pub server_name: Option<String>,
+    pub state: SharedState,
+}
+
+impl ListenerCfg {
+    /// Select the right `ServerState` for an incoming request based on the
+    /// `Host` header (port stripped, case-insensitive). Falls back to the
+    /// first vhost.
+    pub fn pick_state(&self, host_header: Option<&str>) -> &SharedState {
+        if let Some(h) = host_header {
+            let host = h.split(':').next().unwrap_or(h).to_ascii_lowercase();
+            for v in &self.vhosts {
+                if let Some(name) = &v.server_name {
+                    if name.to_ascii_lowercase() == host {
+                        return &v.state;
+                    }
+                }
+            }
+        }
+        &self.vhosts[0].state
+    }
 }
 
 pub struct ServerState {
@@ -374,7 +403,11 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         balancers.insert(up.name.clone(), balancer);
     }
 
-    let mut servers = Vec::new();
+    // Build a flat `(addr, ServerState, cert?)` list first; group by addr
+    // afterwards so multiple `server` blocks on the same port collapse
+    // into a single listener with SNI multi-cert.
+    let mut staged: Vec<(SocketAddr, VirtualHost, Option<crate::tls::CertEntry>)> =
+        Vec::with_capacity(http.servers.len());
     for s in &http.servers {
         let addr = s
             .listen
@@ -497,7 +530,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         }
         prefix_locs.sort_by(|a, b| b.path.len().cmp(&a.path.len()));
 
-        let tls = if s.tls {
+        let cert_entry = if s.tls {
             let cert = s
                 .ssl_certificate
                 .as_ref()
@@ -506,34 +539,76 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 .ssl_certificate_key
                 .as_ref()
                 .ok_or("missing ssl_certificate_key for a TLS server")?;
-            let cert_path = PathBuf::from(cert);
-            let key_path = PathBuf::from(key);
-            let server_config =
-                crate::tls::server_config(&cert_path, &key_path)?;
-            Some(TlsHandles {
-                server_config,
-                cert_path,
-                key_path,
+            Some(crate::tls::CertEntry {
+                server_name: s.server_name.clone(),
+                cert_path: PathBuf::from(cert),
+                key_path: PathBuf::from(key),
             })
         } else {
             None
         };
 
         let scheme = if s.tls { "https" } else { "http" };
-        servers.push((
+        let state = Arc::new(ServerState {
+            server_name: s.server_name.clone(),
+            scheme,
+            gzip: s.gzip.unwrap_or(false),
+            gzip_types: s.gzip_types.clone(),
+            maps: Arc::new(http.maps.clone()),
+            exact_locs,
+            prefix_locs,
+        });
+        staged.push((
             addr,
-            Arc::new(ServerState {
+            VirtualHost {
                 server_name: s.server_name.clone(),
-                scheme,
-                gzip: s.gzip.unwrap_or(false),
-                gzip_types: s.gzip_types.clone(),
-                maps: Arc::new(http.maps.clone()),
-                exact_locs,
-                prefix_locs,
-            }),
-            tls,
+                state,
+            },
+            cert_entry,
         ));
     }
+
+    // Group by listen address.
+    let mut listener_map: HashMap<SocketAddr, ListenerCfg> = HashMap::new();
+    let mut order: Vec<SocketAddr> = Vec::new();
+    for (addr, vhost, cert) in staged {
+        let entry = listener_map.entry(addr).or_insert_with(|| {
+            order.push(addr);
+            ListenerCfg {
+                addr,
+                vhosts: Vec::new(),
+                tls: None,
+                tls_paths: Vec::new(),
+            }
+        });
+        // Plain + TLS on the same address is ambiguous — refuse loudly.
+        match (entry.tls_paths.is_empty(), cert.is_some()) {
+            // Mixing: previous blocks were one mode, this block is the other.
+            _ if !entry.vhosts.is_empty()
+                && entry.tls_paths.is_empty() != cert.is_none() =>
+            {
+                return Err(format!(
+                    "listen {addr}: cannot mix TLS and plain HTTP server blocks on the same address"
+                ));
+            }
+            _ => {}
+        }
+        if let Some(c) = cert {
+            entry.tls_paths.push(c);
+        }
+        entry.vhosts.push(vhost);
+    }
+
+    // Materialize TLS server configs for grouped listeners.
+    for cfg in listener_map.values_mut() {
+        if !cfg.tls_paths.is_empty() {
+            cfg.tls = Some(crate::tls::build_server_config(&cfg.tls_paths)?);
+        }
+    }
+    let listeners: Vec<ListenerCfg> = order
+        .into_iter()
+        .map(|a| listener_map.remove(&a).expect("inserted above"))
+        .collect();
 
     // Build stream listeners.
     let mut stream_servers: Vec<(SocketAddr, Arc<Balancer>)> = Vec::new();
@@ -579,11 +654,11 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         }
     }
 
-    if servers.is_empty() && stream_servers.is_empty() {
+    if listeners.is_empty() && stream_servers.is_empty() {
         return Err("config has no 'server' blocks (http or stream)".into());
     }
     Ok(Runtime {
-        servers,
+        listeners,
         stream_servers,
     })
 }

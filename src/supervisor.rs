@@ -1,5 +1,6 @@
 //! Process-level supervisor: spawns HTTP and stream listeners, handles
-//! configuration reload (SIGHUP), and coordinates graceful shutdown.
+//! configuration reload (SIGHUP), coordinates graceful shutdown, and
+//! pushes hot-reloaded TLS acceptors to running listeners.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -11,14 +12,15 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::app::{self, Balancer, ServerState, TlsHandles};
+use crate::app::{self, Balancer, ListenerCfg};
 use crate::{config, server, stream};
 
 struct HttpListener {
     addr: SocketAddr,
-    state_tx: watch::Sender<Arc<ServerState>>,
-    /// Present iff the listener terminates TLS. Used to push a freshly
-    /// rebuilt `TlsAcceptor` on `SIGHUP` reload (cert hot-reload).
+    cfg_tx: watch::Sender<Arc<ListenerCfg>>,
+    /// `Some` iff this is a TLS listener. Used to push a freshly rebuilt
+    /// `TlsAcceptor` (with possibly new certs and a new SNI resolver) on
+    /// `SIGHUP` reload.
     tls_tx: Option<watch::Sender<Arc<tokio_rustls::TlsAcceptor>>>,
     shutdown_tx: watch::Sender<bool>,
     join: JoinHandle<()>,
@@ -42,9 +44,9 @@ impl Supervisor {
         config_path: PathBuf,
         runtime: app::Runtime,
     ) -> std::io::Result<Self> {
-        let mut http_listeners = Vec::with_capacity(runtime.servers.len());
-        for (addr, state, tls_handles) in runtime.servers {
-            http_listeners.push(spawn_http(addr, state, tls_handles).await?);
+        let mut http_listeners = Vec::with_capacity(runtime.listeners.len());
+        for cfg in runtime.listeners {
+            http_listeners.push(spawn_http(cfg).await?);
         }
         let mut stream_listeners = Vec::with_capacity(runtime.stream_servers.len());
         for (addr, balancer) in runtime.stream_servers {
@@ -80,7 +82,7 @@ impl Supervisor {
             }
         };
 
-        self.reload_http(runtime.servers).await;
+        self.reload_http(runtime.listeners).await;
         self.reload_stream(runtime.stream_servers).await;
 
         info!(
@@ -90,22 +92,20 @@ impl Supervisor {
         );
     }
 
-    async fn reload_http(
-        &mut self,
-        new: Vec<(SocketAddr, Arc<ServerState>, Option<TlsHandles>)>,
-    ) {
-        let mut wanted: HashMap<
-            SocketAddr,
-            (Arc<ServerState>, Option<TlsHandles>),
-        > = new.into_iter().map(|(a, s, t)| (a, (s, t))).collect();
+    async fn reload_http(&mut self, new: Vec<ListenerCfg>) {
+        let mut wanted: HashMap<SocketAddr, ListenerCfg> =
+            new.into_iter().map(|c| (c.addr, c)).collect();
 
         let mut kept = Vec::with_capacity(self.http_listeners.len());
         for l in self.http_listeners.drain(..) {
-            if let Some((new_state, new_tls)) = wanted.remove(&l.addr) {
-                // Hot-reload certificate when the listener stays TLS.
-                if let (Some(tls_tx), Some(handles)) = (&l.tls_tx, &new_tls) {
+            if let Some(new_cfg) = wanted.remove(&l.addr) {
+                let new_cfg_arc = Arc::new(new_cfg);
+                // Hot-reload TLS acceptor if both sides are TLS.
+                if let (Some(tls_tx), Some(server_config)) =
+                    (&l.tls_tx, &new_cfg_arc.tls)
+                {
                     let acceptor = Arc::new(
-                        tokio_rustls::TlsAcceptor::from(handles.server_config.clone()),
+                        tokio_rustls::TlsAcceptor::from(server_config.clone()),
                     );
                     if tls_tx.send(acceptor).is_err() {
                         warn!(
@@ -113,23 +113,19 @@ impl Supervisor {
                             l.addr
                         );
                     } else {
+                        let cert_count = new_cfg_arc.tls_paths.len();
                         info!(
-                            "reload: TLS listener {} re-loaded cert from {} / {}",
-                            l.addr,
-                            handles.cert_path.display(),
-                            handles.key_path.display()
+                            "reload: TLS listener {} re-loaded {} certificate(s)",
+                            l.addr, cert_count
                         );
                     }
-                } else if l.tls_tx.is_some() != new_tls.is_some() {
-                    // Toggling TLS on/off in place is not supported — would
-                    // require respawning the listener with a different
-                    // accept-path. Log loudly so it's not silent.
+                } else if l.tls_tx.is_some() != new_cfg_arc.tls.is_some() {
                     warn!(
                         "reload: TLS toggled on listener {} — restart Elrond for this change",
                         l.addr
                     );
                 }
-                if l.state_tx.send(new_state).is_err() {
+                if l.cfg_tx.send(new_cfg_arc).is_err() {
                     warn!("reload: http listener on {} has gone away", l.addr);
                 }
                 kept.push(l);
@@ -142,8 +138,9 @@ impl Supervisor {
                 });
             }
         }
-        for (addr, (state, tls)) in wanted {
-            match spawn_http(addr, state, tls).await {
+        for (_, cfg) in wanted.into_iter() {
+            let addr = cfg.addr;
+            match spawn_http(cfg).await {
                 Ok(l) => {
                     info!("reload: started new http listener on {addr}");
                     kept.push(l);
@@ -201,17 +198,17 @@ impl Supervisor {
     }
 }
 
-async fn spawn_http(
-    addr: SocketAddr,
-    state: Arc<ServerState>,
-    tls_handles: Option<TlsHandles>,
-) -> std::io::Result<HttpListener> {
+async fn spawn_http(cfg: ListenerCfg) -> std::io::Result<HttpListener> {
+    let addr = cfg.addr;
     let listener = TcpListener::bind(addr).await?;
-    let (state_tx, state_rx) = watch::channel(state);
+
+    let tls_handles = cfg.tls.clone();
+    let cfg_arc = Arc::new(cfg);
+    let (cfg_tx, cfg_rx) = watch::channel(cfg_arc);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let (tls_tx, tls_rx) = if let Some(h) = &tls_handles {
-        let acceptor = Arc::new(tokio_rustls::TlsAcceptor::from(h.server_config.clone()));
+    let (tls_tx, tls_rx) = if let Some(server_config) = tls_handles {
+        let acceptor = Arc::new(tokio_rustls::TlsAcceptor::from(server_config));
         let (tx, rx) = watch::channel(acceptor);
         (Some(tx), Some(rx))
     } else {
@@ -220,14 +217,14 @@ async fn spawn_http(
 
     let join = tokio::spawn(async move {
         if let Err(e) =
-            server::run(addr, listener, tls_rx, state_rx, shutdown_rx).await
+            server::run(addr, listener, tls_rx, cfg_rx, shutdown_rx).await
         {
             error!("listener on {addr}: {e}");
         }
     });
     Ok(HttpListener {
         addr,
-        state_tx,
+        cfg_tx,
         tls_tx,
         shutdown_tx,
         join,
