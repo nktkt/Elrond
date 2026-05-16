@@ -2,6 +2,66 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.22.0] - 2026-05-16
+
+**Operational basics: file logs, `SIGUSR1` reopen, PID file, systemd
+`Type=notify`.** 80 unit tests. Pre-alpha.
+
+The minimum a service manager needs to host Elrond properly.
+
+### Added
+
+- **`access_log <path>;`** now writes to a file. Entries with
+  `target: "access"` (one per served request) go here.
+- **`error_log <path>;`** now writes to a file. Everything else
+  (startup, reload, health, warnings, …) goes here.
+- Falls back to **stdout / stderr** when the directives are absent —
+  matches the existing behavior, so existing configs work unchanged.
+- **`SIGUSR1`** reopens both files. The integration point for
+  `logrotate` without `copytruncate`:
+  ```text
+  /var/log/elrond/*.log {
+      daily
+      rotate 14
+      postrotate
+          /bin/kill -USR1 $(cat /run/elrond.pid)
+      endscript
+  }
+  ```
+- **`pid <path>;`** actually writes the PID file at startup and removes
+  it on clean shutdown.
+- **systemd `Type=notify`** integration (Unix only): when
+  `$NOTIFY_SOCKET` is set, Elrond sends
+  - `READY=1` once all listeners are bound,
+  - `RELOADING=1` at the start of a `SIGHUP` reload, `READY=1` when
+    it finishes,
+  - `STOPPING=1` on shutdown.
+  Logs out a short `STATUS=…` string with the listener count.
+- README's documentation block and `--help` updated to mention all
+  three signals (`SIGHUP`, `SIGUSR1`, `SIGINT/SIGTERM`).
+
+### Verified end-to-end
+
+```
+pid       /tmp/elog/elrond.pid;
+error_log /tmp/elog/error.log;
+http { access_log /tmp/elog/access.log; … }
+```
+
+- PID file present with the right value; removed on `SIGINT`.
+- Two GETs → `access.log` has two access lines; `error.log` has the
+  startup lines (no access lines mixed in).
+- `mv access.log access.log.1 && kill -USR1` → the next request lands
+  in a fresh `access.log` while the rotated file still has the old
+  entries.
+
+### Known follow-ups
+
+- No `log_format` yet; the access line format is a fixed
+  `INFO <client_ip> "<method> <path>" <status>`.
+- systemd `Type=notify-reload` (newer protocol) not used; we send
+  `RELOADING=1` / `READY=1` manually.
+
 ## [0.21.0] - 2026-05-15
 
 **`map` directive (literal-pattern only).** 80 unit tests. Pre-alpha.
@@ -1015,6 +1075,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.22.0]: https://github.com/nktkt/Elrond/releases/tag/v0.22.0
 [0.21.0]: https://github.com/nktkt/Elrond/releases/tag/v0.21.0
 [0.20.0]: https://github.com/nktkt/Elrond/releases/tag/v0.20.0
 [0.19.0]: https://github.com/nktkt/Elrond/releases/tag/v0.19.0

@@ -10,9 +10,12 @@ mod gzip;
 mod health;
 mod http_date;
 mod limit;
+mod logging;
 mod metrics;
 mod proxy;
 mod request_ctx;
+#[cfg(unix)]
+mod sd_notify;
 mod server;
 mod static_files;
 mod stream;
@@ -61,17 +64,34 @@ async fn main() -> ExitCode {
         }
     }
 
-    init_tracing();
-    metrics::init();
-    tls::install_crypto_provider();
-
+    // Config is parsed *before* logging so we can route logs to the files
+    // the operator named (`access_log`, `error_log`). Parse errors fall
+    // back to stderr.
     let cfg = match config::load(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            error!("config error: {e}");
+            eprintln!("elrond: config error: {e}");
             return ExitCode::FAILURE;
         }
     };
+
+    let access_log_path: Option<PathBuf> = cfg
+        .http
+        .as_ref()
+        .and_then(|h| h.access_log.clone())
+        .map(PathBuf::from);
+    let error_log_path: Option<PathBuf> = cfg.error_log.clone().map(PathBuf::from);
+
+    if let Err(e) =
+        logging::install(access_log_path.as_deref(), error_log_path.as_deref())
+    {
+        eprintln!("elrond: failed to install logging: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    metrics::init();
+    tls::install_crypto_provider();
+
     let runtime = match app::build(&cfg) {
         Ok(rt) => rt,
         Err(e) => {
@@ -82,14 +102,25 @@ async fn main() -> ExitCode {
 
     if test_only {
         println!(
-            "config '{}' is valid: {} server block(s)",
+            "config '{}' is valid: {} http + {} stream server block(s)",
             config_path.display(),
-            runtime.servers.len()
+            runtime.servers.len(),
+            runtime.stream_servers.len()
         );
         return ExitCode::SUCCESS;
     }
 
     info!("elrond {VERSION} starting (pid {})", std::process::id());
+
+    // Write the PID file if one was requested.
+    let pid_path: Option<PathBuf> = cfg.pid.clone().map(PathBuf::from);
+    if let Some(path) = &pid_path {
+        match std::fs::write(path, format!("{}\n", std::process::id())) {
+            Ok(()) => info!("wrote PID file '{}'", path.display()),
+            Err(e) => warn!("could not write PID file '{}': {e}", path.display()),
+        }
+    }
+
     if let Some(wp) = &cfg.worker_processes {
         info!("worker_processes {wp} (single-process, multi-threaded)");
     }
@@ -98,40 +129,57 @@ async fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             error!("failed to start listeners: {e}");
+            cleanup_pid_file(pid_path.as_deref());
             return ExitCode::FAILURE;
         }
     };
     info!(
-        "elrond ready; {} listener(s); SIGHUP reloads config, SIGINT/SIGTERM shuts down",
+        "elrond ready; {} listener(s); SIGHUP reloads config, \
+         SIGUSR1 reopens logs, SIGINT/SIGTERM shuts down",
         supervisor.listener_count()
     );
+    #[cfg(unix)]
+    {
+        sd_notify::status(&format!(
+            "ready: {} listener(s)",
+            supervisor.listener_count()
+        ));
+        sd_notify::ready();
+    }
 
     wait_for_signals(&mut supervisor).await;
 
     info!("shutting down; draining listeners");
+    #[cfg(unix)]
+    sd_notify::stopping();
     supervisor.shutdown().await;
     info!("elrond stopped");
+    cleanup_pid_file(pid_path.as_deref());
     ExitCode::SUCCESS
+}
+
+fn cleanup_pid_file(path: Option<&std::path::Path>) {
+    if let Some(p) = path {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 #[cfg(unix)]
 async fn wait_for_signals(supervisor: &mut Supervisor) {
     use tokio::signal::unix::{signal, SignalKind};
 
-    let mut hup = match signal(SignalKind::hangup()) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            warn!("could not install SIGHUP handler: {e}");
-            None
-        }
-    };
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            warn!("could not install SIGTERM handler: {e}");
-            None
-        }
-    };
+    let mut hup = signal(SignalKind::hangup()).ok();
+    let mut term = signal(SignalKind::terminate()).ok();
+    let mut usr1 = signal(SignalKind::user_defined1()).ok();
+    if hup.is_none() {
+        warn!("could not install SIGHUP handler");
+    }
+    if term.is_none() {
+        warn!("could not install SIGTERM handler");
+    }
+    if usr1.is_none() {
+        warn!("could not install SIGUSR1 handler");
+    }
 
     loop {
         tokio::select! {
@@ -145,7 +193,17 @@ async fn wait_for_signals(supervisor: &mut Supervisor) {
             }
             _ = async { hup.as_mut().unwrap().recv().await }, if hup.is_some() => {
                 info!("SIGHUP received");
+                sd_notify::reloading();
                 supervisor.reload().await;
+                sd_notify::status(&format!(
+                    "reloaded: {} listener(s)",
+                    supervisor.listener_count()
+                ));
+                sd_notify::ready();
+            }
+            _ = async { usr1.as_mut().unwrap().recv().await }, if usr1.is_some() => {
+                info!("SIGUSR1 received — reopening log files");
+                logging::reopen_all();
             }
         }
     }
@@ -157,14 +215,6 @@ async fn wait_for_signals(_supervisor: &mut Supervisor) {
         Ok(()) => info!("shutdown signal received"),
         Err(e) => error!("failed to listen for shutdown signal: {e}"),
     }
-}
-
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_env("ELROND_LOG")
-        .or_else(|_| EnvFilter::try_new("info"))
-        .expect("the fallback filter 'info' is always valid");
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 fn print_help() {
@@ -181,8 +231,10 @@ fn print_help() {
     println!();
     println!("SIGNALS (Unix):");
     println!("    SIGHUP                Re-read the configuration file");
+    println!("    SIGUSR1               Reopen access_log / error_log files");
     println!("    SIGINT, SIGTERM       Graceful shutdown");
     println!();
     println!("ENVIRONMENT:");
     println!("    ELROND_LOG            Log filter, e.g. 'info', 'debug' (default: info)");
+    println!("    NOTIFY_SOCKET         systemd notify socket (auto-detected when present)");
 }
