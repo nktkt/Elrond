@@ -2,6 +2,56 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.30.0] - 2026-05-16
+
+**`auth_request` — delegate authorization to an HTTP service.** 80 unit
+tests. Pre-alpha.
+
+### Added
+
+- **`auth_request <url>;`** at location level. The URL is a template;
+  per request, Elrond renders it and issues a `GET` to the rendered
+  URL. `2xx` → the original request proceeds. Anything else → that
+  status is returned to the client (with a short marker body so the
+  auth service's internal response doesn't leak).
+- Forwarded headers: `Authorization`, `Cookie`, `User-Agent`.
+- Added headers: `X-Original-URI`, `X-Original-Method`, so the auth
+  service knows what the user tried to do.
+- Hard 5-second timeout on the subrequest; expiry → `504`. Connect /
+  send errors → `500`.
+- Ordering: `auth_request` runs **after** `allow`/`deny`,
+  `limit_req`, and `limit_conn` (so denials don't pay the auth-service
+  round-trip), and **before** `auth_basic` and the action.
+
+### Verified end-to-end
+
+```nginx
+location /protected/ {
+    auth_request http://127.0.0.1:7100/verify;
+    proxy_pass   http://127.0.0.1:7200;
+}
+```
+
+The auth service returns `200` iff `Authorization` contains
+`good-token`, otherwise `403`.
+
+| client request                          | result            |
+|-----------------------------------------|-------------------|
+| no `Authorization`                      | `403`             |
+| `Authorization: Bearer bad-token`       | `403`             |
+| `Authorization: Bearer good-token`      | `200 protected-data` |
+
+Access log entries are tagged `(auth_request)` for denials.
+
+### Known follow-ups
+
+- No internal-location subrequest yet (URL must be a full
+  `http://…`). Nginx supports `auth_request /local-path;`; we don't.
+- The subrequest response body is discarded; passing through
+  `Set-Cookie` from the auth service (Nginx
+  `auth_request_set $var $upstream_http_x_user;` pattern) is a
+  follow-up.
+
 ## [0.29.0] - 2026-05-16
 
 **Regex `location` (`~` and `~*`).** 80 unit tests. Pre-alpha.
@@ -1457,6 +1507,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.30.0]: https://github.com/nktkt/Elrond/releases/tag/v0.30.0
 [0.29.0]: https://github.com/nktkt/Elrond/releases/tag/v0.29.0
 [0.28.0]: https://github.com/nktkt/Elrond/releases/tag/v0.28.0
 [0.27.0]: https://github.com/nktkt/Elrond/releases/tag/v0.27.0

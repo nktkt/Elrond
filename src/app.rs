@@ -137,6 +137,8 @@ pub struct LocationRt {
     /// `proxy_read_timeout` for the upstream exchange. `None` → process
     /// default (60s).
     pub proxy_read_timeout: Option<Duration>,
+    /// `auth_request <url>;` — delegate authorization to an HTTP service.
+    pub auth_request: Option<Template>,
 }
 
 /// Process defaults applied when a directive does not specify otherwise.
@@ -669,6 +671,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 access_rules: Arc::new(rules),
                 proxy_connect_timeout: loc.proxy_connect_timeout,
                 proxy_read_timeout: loc.proxy_read_timeout,
+                auth_request: loc.auth_request.clone(),
             };
             match &loc.kind {
                 LocationKind::Exact => exact_locs.push(location_rt),

@@ -3,6 +3,7 @@
 mod access;
 mod app;
 mod auth;
+mod auth_request;
 mod body;
 mod cache;
 mod config;

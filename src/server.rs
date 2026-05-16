@@ -331,6 +331,27 @@ async fn handle(
                     None
                 };
 
+                // auth_request — delegate to an HTTP service. Done here so
+                // that limit_req / limit_conn already ran, but before the
+                // local auth_basic challenge and before the action runs.
+                if let Some(url_tmpl) = &loc.auth_request {
+                    if let Err(denied) =
+                        crate::auth_request::check(url_tmpl, &ctx, &headers).await
+                    {
+                        let status = denied.status().as_u16();
+                        metrics::record_request(status);
+                        info!(
+                            target: "access",
+                            "{} \"{} {}\" {} (auth_request)",
+                            peer.ip(),
+                            method,
+                            path,
+                            status
+                        );
+                        return Ok(denied);
+                    }
+                }
+
                 // auth_basic — challenge before doing any work.
                 if let Some(auth) = &loc.auth {
                     if let Err(challenge) = crate::auth::check(auth, &headers) {

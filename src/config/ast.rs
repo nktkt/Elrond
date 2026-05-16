@@ -247,6 +247,11 @@ pub struct Location {
     /// whole upstream exchange after the connect succeeds. `None` →
     /// process default (60s).
     pub proxy_read_timeout: Option<Duration>,
+    /// `auth_request <url>;` — delegate authorization to an HTTP service.
+    /// The URL is a template (variables rendered per request). A 2xx
+    /// response from the subrequest lets the original request proceed;
+    /// 401/403/any non-2xx is returned to the client as-is.
+    pub auth_request: Option<Template>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

@@ -43,7 +43,7 @@ const HOP_BY_HOP: [&str; 8] = [
 /// pool should not loop forever on a flaky cluster.
 const MAX_ATTEMPTS: usize = 3;
 
-fn client() -> &'static Client<HttpConnector, ElrondBody> {
+pub(crate) fn client() -> &'static Client<HttpConnector, ElrondBody> {
     static CLIENT: OnceLock<Client<HttpConnector, ElrondBody>> = OnceLock::new();
     CLIENT.get_or_init(|| {
         let mut connector = HttpConnector::new();
