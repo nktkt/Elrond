@@ -2,6 +2,81 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.38.0] - 2026-05-16
+
+**HTTP/3 over QUIC (Phase 11).** 80 unit tests. Pre-alpha.
+
+Closes the single largest roadmap gap. HTTP/3 runs alongside the
+regular TLS HTTP/1+2 listener on the same address: TCP keeps serving
+HTTP/1.1 and HTTP/2; UDP serves HTTP/3 via QUIC. Same certificates,
+same SNI multi-cert resolver, same routing, same actions.
+
+### Added
+
+- **`listen ... http3;`** (also `quic`) on a `server` block. Implies
+  `ssl` — HTTP/3 only runs over QUIC, which is TLS 1.3 only.
+- Adds `quinn = "0.11"`, `h3 = "0.0.8"`, `h3-quinn = "0.0.10"`.
+- A separate `rustls::ServerConfig` per HTTP/3 listener with
+  ALPN = `["h3"]` and TLS 1.3 only; shares the SNI multi-cert
+  resolver with the TCP listener.
+- **`src/http3.rs`** — `quinn::Endpoint` bound on the same UDP port
+  as the TCP listener; per-QUIC-connection `h3::server::Connection`;
+  per-stream task that:
+  - Picks the right vhost via the existing `ListenerCfg::pick_state`.
+  - Buffers the request body up to `client_max_body_size` (or a
+    32 MiB absolute cap if "unlimited") — `413` mid-stream if it
+    exceeds.
+  - Runs the full pipeline: `allow`/`deny` → `limit_req` →
+    `limit_conn` → `auth_request` → `auth_basic` → `mirror` →
+    action.
+  - Supports every action variant: `return`, `static`, `metrics`,
+    `try_files`, **`proxy_pass`** (body buffered, forwarded through
+    the same `proxy::forward` chain as HTTP/1+2).
+- `proxy::forward` signature refactored to take `Request<ElrondBody>`
+  so HTTP/1+2 and HTTP/3 share one code path.
+- The access log distinguishes HTTP/3 entries with `(h3)`.
+
+### Verified end-to-end
+
+```nginx
+server {
+    listen 8443 ssl http3;
+    server_name alpha.local;
+    ssl_certificate     /path/to/alpha.crt;
+    ssl_certificate_key /path/to/alpha.key;
+    location / { return 200 "hello from h3\n"; }
+}
+```
+
+Both `curl` (TLS HTTP/2) and `curl --http3` return `hello from h3`.
+Access log shows `GET / 200` and `GET / 200 (h3)` from the same
+listener. `lsof` confirms TCP + UDP on the same port.
+
+### Known limitations
+
+- No `Alt-Svc` advertisement.
+- No HTTP/3 cert hot-reload on `SIGHUP` (TCP TLS still hot-reloads).
+- No 0-RTT.
+- Request bodies buffered up to the size cap; no streaming uploads.
+
+## [0.37.0] - 2026-05-16
+
+**`gzip_min_length` honored + `docs/compatibility.md` refresh.**
+80 unit tests. Pre-alpha.
+
+### Added
+
+- **`gzip_min_length <N>;`** at server level. Default 20 bytes.
+  Bodies shorter than N skip compression.
+
+### Docs
+
+- `docs/compatibility.md` refreshed to v0.37 baseline: regex
+  `location`, `auth_request`, `mirror`, `https://` upstream,
+  `proxy_ssl_verify`, `proxy_ssl_certificate` (mTLS),
+  variable-driven `proxy_pass`, `listen … udp`, and Vary-aware
+  cache are all now marked implemented.
+
 ## [0.36.0] - 2026-05-16
 
 **mTLS to upstream — `proxy_ssl_certificate` / `_key`.** 80 unit tests.
@@ -1805,6 +1880,8 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.38.0]: https://github.com/nktkt/Elrond/releases/tag/v0.38.0
+[0.37.0]: https://github.com/nktkt/Elrond/releases/tag/v0.37.0
 [0.36.0]: https://github.com/nktkt/Elrond/releases/tag/v0.36.0
 [0.35.0]: https://github.com/nktkt/Elrond/releases/tag/v0.35.0
 [0.34.0]: https://github.com/nktkt/Elrond/releases/tag/v0.34.0
