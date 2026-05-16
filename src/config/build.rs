@@ -461,6 +461,7 @@ fn build_location(
     let mut proxy_read_timeout: Option<std::time::Duration> = None;
     let mut auth_request: Option<Template> = None;
     let mut mirrors: Vec<Template> = Vec::new();
+    let mut proxy_ssl_verify: bool = true;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -577,6 +578,15 @@ fn build_location(
                 mirrors.push(Template::parse(&v));
                 None
             }
+            "proxy_ssl_verify" => {
+                proxy_ssl_verify =
+                    parse_on_off(d.args.first().map(String::as_str), d.line)?;
+                None
+            }
+            "proxy_ssl_certificate" | "proxy_ssl_certificate_key"
+            | "proxy_ssl_trusted_certificate" | "proxy_ssl_server_name"
+            | "proxy_ssl_session_reuse" | "proxy_ssl_protocols"
+            | "proxy_ssl_ciphers" => None,
             "include" => None,
             "try_files" => {
                 if d.args.len() < 2 {
@@ -701,6 +711,7 @@ fn build_location(
         proxy_read_timeout,
         auth_request,
         mirrors,
+        proxy_ssl_verify,
     })
 }
 

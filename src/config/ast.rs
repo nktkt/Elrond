@@ -260,6 +260,10 @@ pub struct Location {
     /// `mirror` directive adds one shadow; the original request flow is
     /// unaffected (shadows are spawned, results discarded).
     pub mirrors: Vec<Template>,
+    /// `proxy_ssl_verify on|off;` — controls server-cert verification
+    /// for HTTPS upstreams. Default: `on`. `off` is for self-signed
+    /// upstreams in test/staging; **do not** ship it to production.
+    pub proxy_ssl_verify: bool,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

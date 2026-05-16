@@ -407,6 +407,7 @@ async fn handle(
                                 set_headers.clone(),
                                 cache.clone(),
                                 loc.proxy_read_timeout,
+                                loc.proxy_ssl_verify,
                                 req,
                                 peer,
                                 &ctx,

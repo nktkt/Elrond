@@ -47,31 +47,37 @@ const MAX_ATTEMPTS: usize = 3;
 pub(crate) fn client() -> &'static Client<HttpsConnector<HttpConnector>, ElrondBody> {
     static CLIENT: OnceLock<Client<HttpsConnector<HttpConnector>, ElrondBody>> =
         OnceLock::new();
-    CLIENT.get_or_init(|| {
-        let mut http = HttpConnector::new();
-        http.set_connect_timeout(Some(DEFAULT_PROXY_CONNECT_TIMEOUT));
-        http.set_nodelay(true);
-        // Allow https:// URIs through this connector.
-        http.enforce_http(false);
-
-        let tls = build_client_tls_config();
-        let connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(tls)
-            .https_or_http()
-            .enable_http1()
-            .enable_http2()
-            .wrap_connector(http);
-
-        Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(Duration::from_secs(30))
-            .build(connector)
-    })
+    CLIENT.get_or_init(|| build_client(build_verifying_tls_config()))
 }
 
-/// Build a `rustls::ClientConfig` for proxied upstream TLS using the
-/// system trust store. v0.32.0 always verifies server certificates;
-/// `proxy_ssl_verify off;` is parsed but not yet honored.
-fn build_client_tls_config() -> rustls::ClientConfig {
+/// The insecure client — used only when a location sets
+/// `proxy_ssl_verify off;`. Builds once, lives for the process.
+pub(crate) fn client_insecure(
+) -> &'static Client<HttpsConnector<HttpConnector>, ElrondBody> {
+    static CLIENT: OnceLock<Client<HttpsConnector<HttpConnector>, ElrondBody>> =
+        OnceLock::new();
+    CLIENT.get_or_init(|| build_client(build_insecure_tls_config()))
+}
+
+fn build_client(
+    tls: rustls::ClientConfig,
+) -> Client<HttpsConnector<HttpConnector>, ElrondBody> {
+    let mut http = HttpConnector::new();
+    http.set_connect_timeout(Some(DEFAULT_PROXY_CONNECT_TIMEOUT));
+    http.set_nodelay(true);
+    http.enforce_http(false);
+    let connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .wrap_connector(http);
+    Client::builder(TokioExecutor::new())
+        .pool_idle_timeout(Duration::from_secs(30))
+        .build(connector)
+}
+
+fn build_verifying_tls_config() -> rustls::ClientConfig {
     let mut roots = rustls::RootCertStore::empty();
     let load = rustls_native_certs::load_native_certs();
     for cert in load.certs {
@@ -88,6 +94,57 @@ fn build_client_tls_config() -> rustls::ClientConfig {
         .with_no_client_auth()
 }
 
+fn build_insecure_tls_config() -> rustls::ClientConfig {
+    // SAFETY (operator-facing, not memory-safety): this builder skips
+    // every server-cert check. It exists *only* to support
+    // `proxy_ssl_verify off;`, which the operator opted into explicitly,
+    // documented as "do not ship to production."
+    rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(NoVerify))
+        .with_no_client_auth()
+}
+
+#[derive(Debug)]
+struct NoVerify;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// Forward `req` through `balancer`. For idempotent methods (`GET`, `HEAD`,
 /// `OPTIONS`, `DELETE`) the request is retried on the next peer (up to
 /// `MAX_ATTEMPTS` total) on connection errors and 5xx responses. For other
@@ -98,12 +155,16 @@ pub async fn forward(
     set_headers: HeaderList,
     cache: Option<ProxyCache>,
     read_timeout: Option<Duration>,
+    ssl_verify: bool,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
     let _ = (DEFAULT_PROXY_CONNECT_TIMEOUT,); // already applied via connector
     let effective_read = read_timeout.unwrap_or(DEFAULT_PROXY_READ_TIMEOUT);
+    let pick_client = || -> &'static Client<HttpsConnector<HttpConnector>, ElrondBody> {
+        if ssl_verify { client() } else { client_insecure() }
+    };
     let retry_safe = matches!(
         *req.method(),
         Method::GET | Method::HEAD | Method::OPTIONS | Method::DELETE
@@ -125,6 +186,7 @@ pub async fn forward(
             set_headers,
             cache,
             effective_read,
+            ssl_verify,
             req,
             client_peer,
             ctx,
@@ -157,7 +219,7 @@ pub async fn forward(
 
         metrics::record_proxy_attempt();
         let req2 = build_request(&parts, empty_body());
-        let attempt = forward_to_peer(&upstream_peer, balancer.scheme, &set_headers, req2, client_peer, ctx);
+        let attempt = forward_to_peer(&upstream_peer, balancer.scheme, pick_client(), &set_headers, req2, client_peer, ctx);
         match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {
             warn!("proxy: upstream '{}' read timed out after {:?}", upstream_peer.addr, effective_read);
             Err(())
@@ -193,11 +255,13 @@ async fn forward_once_with_incoming(
     set_headers: HeaderList,
     cache: Option<ProxyCache>,
     effective_read: Duration,
+    ssl_verify: bool,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
     let _ = cache; // never-cache path (non-GET); kept for symmetry
+    let client_to_use = if ssl_verify { client() } else { client_insecure() };
     let upstream_peer = match balancer.pick(ctx) {
         Some(p) => p,
         None => {
@@ -212,7 +276,7 @@ async fn forward_once_with_incoming(
     let boxed = body.map_err(|e| Box::new(e) as BoxError).boxed();
     let req2 = Request::from_parts(parts, boxed);
     metrics::record_proxy_attempt();
-    let attempt = forward_to_peer(&upstream_peer, balancer.scheme, &set_headers, req2, client_peer, ctx);
+    let attempt = forward_to_peer(&upstream_peer, balancer.scheme, client_to_use, &set_headers, req2, client_peer, ctx);
     match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {
         warn!(
             "proxy: upstream '{}' read timed out after {:?}",
@@ -241,6 +305,7 @@ async fn forward_once_with_incoming(
 async fn forward_to_peer(
     peer: &Arc<Peer>,
     upstream_scheme: &str,
+    client: &Client<HttpsConnector<HttpConnector>, ElrondBody>,
     set_headers: &[(HeaderName, crate::template::Template)],
     req: Request<ElrondBody>,
     client_peer: SocketAddr,
@@ -270,7 +335,7 @@ async fn forward_to_peer(
     apply_proxy_set_headers(&mut parts.headers, set_headers, ctx);
 
     let outbound = Request::from_parts(parts, body);
-    match client().request(outbound).await {
+    match client.request(outbound).await {
         Ok(resp) => {
             let (mut rparts, rbody) = resp.into_parts();
             for h in HOP_BY_HOP {

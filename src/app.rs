@@ -142,6 +142,9 @@ pub struct LocationRt {
     pub auth_request: Option<Template>,
     /// `mirror <url>;` — fire-and-forget shadow requests.
     pub mirrors: Arc<Vec<Template>>,
+    /// `true` to verify the upstream's TLS certificate (default);
+    /// `false` accepts any cert (test / staging escape hatch).
+    pub proxy_ssl_verify: bool,
 }
 
 /// Process defaults applied when a directive does not specify otherwise.
@@ -695,6 +698,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 proxy_read_timeout: loc.proxy_read_timeout,
                 auth_request: loc.auth_request.clone(),
                 mirrors: Arc::new(loc.mirrors.clone()),
+                proxy_ssl_verify: loc.proxy_ssl_verify,
             };
             match &loc.kind {
                 LocationKind::Exact => exact_locs.push(location_rt),

@@ -2,6 +2,43 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.35.0] - 2026-05-16
+
+**`proxy_ssl_verify off;` — closes the v0.32 caveat.** 80 unit tests.
+Pre-alpha.
+
+The escape hatch for self-signed upstreams in test / staging. Default
+remains **`on`** — we never silently downgrade.
+
+### Added
+
+- **`proxy_ssl_verify on|off;`** at location level. Default `on`.
+- Two static HTTPS clients live in the proxy module:
+  - `client()` — verifying client (system trust store).
+  - `client_insecure()` — accepts any server cert via a custom
+    `ServerCertVerifier` (gated behind `proxy_ssl_verify off;`).
+- The per-location flag selects which client handles the request, on
+  both the retry-safe and single-shot paths.
+- Several `proxy_ssl_*` directives now parse without error
+  (`proxy_ssl_certificate`, `_key`, `_trusted_certificate`,
+  `_server_name`, `_session_reuse`, `_protocols`, `_ciphers`); mTLS
+  enforcement comes in the next release.
+
+### Verified end-to-end
+
+Python HTTPS server on `127.0.0.1:7700` with a fresh self-signed cert.
+
+| location              | result                       |
+|-----------------------|------------------------------|
+| default (verify on)   | `502` (cert chain rejected)  |
+| `proxy_ssl_verify off`| `200 selfsigned-ok`          |
+
+### Known follow-ups
+
+- mTLS (`proxy_ssl_certificate` / `_key`) parsed but not honored.
+- `proxy_ssl_trusted_certificate` (pin an extra trust root) parsed
+  but not honored.
+
 ## [0.34.0] - 2026-05-16
 
 **Cache: Vary-aware variants.** 80 unit tests. Pre-alpha.
@@ -1719,6 +1756,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.35.0]: https://github.com/nktkt/Elrond/releases/tag/v0.35.0
 [0.34.0]: https://github.com/nktkt/Elrond/releases/tag/v0.34.0
 [0.33.0]: https://github.com/nktkt/Elrond/releases/tag/v0.33.0
 [0.32.0]: https://github.com/nktkt/Elrond/releases/tag/v0.32.0
