@@ -115,8 +115,10 @@ pub struct LocationRt {
     pub limit_conn: Option<crate::limit::LimitConnApply>,
     /// `allow` / `deny` rules in declaration order.
     pub access_rules: Arc<Vec<crate::access::AccessRule>>,
-    /// `proxy_connect_timeout` for this location. `None` → process
-    /// default (10s).
+    /// `proxy_connect_timeout` for this location. Parsed and stored;
+    /// the connect timeout is currently set process-wide on the proxy
+    /// client. Per-location override is a follow-up.
+    #[allow(dead_code)]
     pub proxy_connect_timeout: Option<Duration>,
     /// `proxy_read_timeout` for the upstream exchange. `None` → process
     /// default (60s).

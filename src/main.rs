@@ -82,11 +82,16 @@ async fn main() -> ExitCode {
         .map(PathBuf::from);
     let error_log_path: Option<PathBuf> = cfg.error_log.clone().map(PathBuf::from);
 
-    if let Err(e) =
-        logging::install(access_log_path.as_deref(), error_log_path.as_deref())
-    {
-        eprintln!("elrond: failed to install logging: {e}");
-        return ExitCode::FAILURE;
+    // `-t` is a config syntax check — never touch the log files. This lets
+    // operators validate a config from a workstation without prepping log
+    // directories that only exist on the deployment host.
+    if !test_only {
+        if let Err(e) =
+            logging::install(access_log_path.as_deref(), error_log_path.as_deref())
+        {
+            eprintln!("elrond: failed to install logging: {e}");
+            return ExitCode::FAILURE;
+        }
     }
 
     metrics::init();
@@ -95,7 +100,11 @@ async fn main() -> ExitCode {
     let runtime = match app::build(&cfg) {
         Ok(rt) => rt,
         Err(e) => {
-            error!("config error: {e}");
+            if test_only {
+                eprintln!("elrond: config error: {e}");
+            } else {
+                error!("config error: {e}");
+            }
             return ExitCode::FAILURE;
         }
     };

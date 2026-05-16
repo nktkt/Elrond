@@ -2,6 +2,60 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.27.0] - 2026-05-16
+
+**Deployment-ready package: production config + systemd unit + logrotate
+template + refreshed docs.** 80 unit tests. Pre-alpha (production-trial
+ready).
+
+This release is largely operational: no new directives, but the
+artifacts needed to drop Elrond onto a host.
+
+### Added
+
+- **[`examples/production.conf`](examples/production.conf)** — a
+  full-featured, production-shaped config:
+  - HTTP → HTTPS redirect.
+  - TLS multi-cert (`www`, `api`, `admin`) with `ssl_protocols`.
+  - Cached static assets + SPA shell (`try_files`).
+  - Proxied API with `proxy_read_timeout`, `proxy_cache`,
+    `limit_req` (login burst protection), `limit_conn` (per-IP).
+  - Admin area: `auth_basic` + `allow`/`deny` IP allow-list.
+  - Loopback-bound `/metrics` endpoint behind `allow 127/8; deny all`.
+  - Stream-block TCP proxy to PostgreSQL.
+  - `map`-based variable derivation.
+  - Security baseline headers (`Strict-Transport-Security`,
+    `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`).
+- **[`examples/elrond.service`](examples/elrond.service)** —
+  reference systemd unit. `Type=notify`, `ExecReload=/bin/kill -HUP`,
+  `Restart=on-failure`, `LimitNOFILE=65536`, optional hardening lines
+  commented out (uncomment after verifying in your env).
+- **[`examples/logrotate.elrond`](examples/logrotate.elrond)** —
+  daily rotation, 14-day retention, compress + delaycompress,
+  `postrotate /bin/kill -USR1 …`. No `copytruncate` needed.
+
+### Changed
+
+- **`docs/compatibility.md`** rewritten to v0.27 baseline — every
+  directive added through v0.26 is on the matrix.
+- **README** "What works in v0.27.0" rewritten with the production
+  trial pointer and the full capability list.
+- **`elrond -t`** no longer touches the log files. This lets operators
+  validate a config from a workstation without prepping
+  `/var/log/elrond/`.
+- Cleaned up several `dead_code` warnings on fields kept for
+  diagnostics / future use.
+
+### Verified
+
+- `elrond -t` validates every shipped example config cleanly:
+  `elrond.conf`, `examples/minimal.conf`, `examples/static.conf`,
+  `examples/proxy.conf`, `examples/load_balance.conf`,
+  `examples/v0_2_showcase.conf`.
+- `examples/production.conf` parses end-to-end; running it just
+  needs its referenced cert/key/htpasswd files to exist on the host
+  (the error message tells you which one is missing).
+
 ## [0.26.0] - 2026-05-16
 
 **gzip on proxied bodies + automatic `X-Forwarded-Proto`.** 80 unit
@@ -1298,6 +1352,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.27.0]: https://github.com/nktkt/Elrond/releases/tag/v0.27.0
 [0.26.0]: https://github.com/nktkt/Elrond/releases/tag/v0.26.0
 [0.25.0]: https://github.com/nktkt/Elrond/releases/tag/v0.25.0
 [0.24.0]: https://github.com/nktkt/Elrond/releases/tag/v0.24.0

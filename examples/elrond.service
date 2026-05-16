@@ -1,0 +1,44 @@
+[Unit]
+Description=Elrond reverse proxy
+Documentation=https://github.com/nktkt/Elrond
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/elrond -c /etc/elrond/elrond.conf
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -TERM $MAINPID
+PIDFile=/run/elrond.pid
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# Restart on crash; rate-limit so a bug-loop doesn't burn CPU forever.
+Restart=on-failure
+RestartSec=2s
+StartLimitInterval=60s
+StartLimitBurst=5
+
+# Generous file-descriptor limit for many concurrent connections.
+LimitNOFILE=65536
+
+# Hardening — uncomment after you've verified things work in your env.
+# ProtectSystem=strict
+# ReadWritePaths=/var/log/elrond /var/cache/elrond /run
+# ProtectHome=true
+# NoNewPrivileges=true
+# PrivateTmp=true
+# ProtectKernelModules=true
+# ProtectKernelTunables=true
+# ProtectControlGroups=true
+# RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Pipe the (already file-backed) stderr to journald for a backstop;
+# everything important is already in access_log / error_log.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

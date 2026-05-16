@@ -1,0 +1,17 @@
+# /etc/logrotate.d/elrond
+#
+# Elrond opens log files in append mode. `kill -USR1` makes the running
+# process re-open them — no `copytruncate` needed, no log lines lost.
+
+/var/log/elrond/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    postrotate
+        /bin/kill -USR1 "$(cat /run/elrond.pid)" 2>/dev/null || true
+    endscript
+}

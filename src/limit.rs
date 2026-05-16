@@ -40,6 +40,8 @@ pub const APPROX_BYTES_PER_ENTRY: usize = 64;
 /// Definition of one `limit_req_zone`. Multiple locations can reference
 /// the same zone with different `burst` values.
 pub struct LimitReqZone {
+    /// Zone name (used in diagnostics).
+    #[allow(dead_code)]
     pub name: String,
     pub key_template: Template,
     pub rate_per_sec: f64,
@@ -148,6 +150,7 @@ fn deny_response() -> Response<ElrondBody> {
 /// holds one count via a RAII guard, released when the response future is
 /// dropped. Past `max_conn`, the next request gets `503`.
 pub struct LimitConnZone {
+    #[allow(dead_code)]
     pub name: String,
     pub key_template: Template,
     pub max_entries: usize,

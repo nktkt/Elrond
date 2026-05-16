@@ -10,15 +10,22 @@ workloads** — and then grow outward from there.
 
 ## Status
 
-🚧 **v0.12.0 — pre-alpha.** Not production-ready. APIs, configuration syntax, and crate layout will
-change. See the [changelog](CHANGELOG.md) for what landed.
+🚧 **v0.27.0 — pre-alpha** (production-trial-ready). API and config syntax may still change.
+See the [changelog](CHANGELOG.md) for every release; this section is a quick capabilities map.
 
-### What works in v0.12.0
+### What works in v0.27.0
+
+**Try it in production trial:** a ready-to-adapt config lives at
+[`examples/production.conf`](examples/production.conf), a `systemd` unit at
+[`examples/elrond.service`](examples/elrond.service), and a logrotate template at
+[`examples/logrotate.elrond`](examples/logrotate.elrond).
 
 - Nginx-style configuration parser with line-numbered errors (`elrond -t` to check a config)
 - HTTP/1.1 server with keep-alive
 - **TLS / HTTPS** via rustls — `listen 443 ssl;` + `ssl_certificate` / `ssl_certificate_key`;
-  TLS 1.2 / 1.3; plain HTTP and HTTPS coexist in one process
+  TLS 1.2 / 1.3 with **`ssl_protocols` enforcement**; **SNI multi-cert** (multiple `server` blocks
+  with their own certs on the same port); **`SIGHUP` cert hot-reload**; plain HTTP and HTTPS
+  coexist in one process
 - **HTTP/2 over TLS** via ALPN — same TLS listener serves `h2` and `http/1.1` clients
 - Routing: exact-match `location = /path` plus longest-prefix `location /path`
 - `include` directive (relative-path resolution, cycle detection)
@@ -43,12 +50,22 @@ change. See the [changelog](CHANGELOG.md) for what landed.
 - **TCP `stream` proxy** — top-level `stream { upstream … server { listen X; proxy_pass Y; } }`,
   reusing the same balancer / passive-health / `ip_hash` / `least_conn` machinery as HTTP
 - **On-the-fly gzip** — `gzip on;` + `gzip_types`; correct `Vary: Accept-Encoding`; respects
-  client `Accept-Encoding`; static and `return` responses (proxied bodies stream and are not yet
-  compressed)
+  client `Accept-Encoding`; **applies to static AND proxied** responses (proxied is size-guarded
+  to 256 KiB)
 - **In-memory proxy cache** — `proxy_cache_path keys_zone=NAME:SIZE;` + `proxy_cache`,
   `proxy_cache_key`, `proxy_cache_valid`. `X-Cache: HIT|MISS|BYPASS` on every proxied response.
   Strict safety guards: `Set-Cookie`, `Vary`, `Cache-Control: no-store/private/no-cache`,
   non-GET, body>4 MiB → BYPASS
+- **`try_files`** (SPA hosting) — path-existence probes + `=NNN` fallback; path-traversal safe
+- **`map` directive** — variable derivation tables (literal patterns; chained evaluation)
+- **`auth_basic`** with **bcrypt-only** htpasswd (plain / APR1 / SHA1 hashes rejected at startup)
+- **`limit_req`** (token-bucket rate limiting) + **`limit_conn`** (concurrent-connection limit)
+- **`allow` / `deny`** (IPv4/IPv6/CIDR access control)
+- **Production limits**: `client_max_body_size` → 413; `proxy_connect_timeout` /
+  `proxy_read_timeout` → 502; `ssl_protocols TLSv1.2 TLSv1.3` enforcement
+- **Operations**: **file `access_log` / `error_log`**, **`SIGUSR1` log reopen** (logrotate),
+  **PID file**, **systemd `Type=notify`** integration
+- **Auto-set forwarded headers**: `X-Real-IP`, `X-Forwarded-For` (chained), `X-Forwarded-Proto`
 
 **Not yet:** TLS/HTTP2/HTTP3, config hot-reload, caching, `stream` proxying, health checks.
 `listen ... ssl` is rejected rather than silently downgraded. Full list in the changelog.
