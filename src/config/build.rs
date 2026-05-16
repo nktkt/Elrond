@@ -464,6 +464,7 @@ fn build_location(
     let mut proxy_connect_timeout: Option<std::time::Duration> = None;
     let mut proxy_read_timeout: Option<std::time::Duration> = None;
     let mut auth_request: Option<Template> = None;
+    let mut mirrors: Vec<Template> = Vec::new();
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -573,6 +574,11 @@ fn build_location(
             "auth_request" => {
                 let v = arg1(d)?;
                 auth_request = Some(Template::parse(&v));
+                None
+            }
+            "mirror" => {
+                let v = arg1(d)?;
+                mirrors.push(Template::parse(&v));
                 None
             }
             "include" => None,
@@ -698,6 +704,7 @@ fn build_location(
         proxy_connect_timeout,
         proxy_read_timeout,
         auth_request,
+        mirrors,
     })
 }
 

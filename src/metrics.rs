@@ -35,6 +35,8 @@ static LIMIT_REQ_ALLOWED: AtomicU64 = AtomicU64::new(0);
 static LIMIT_REQ_DENIED: AtomicU64 = AtomicU64::new(0);
 static LIMIT_CONN_ALLOWED: AtomicU64 = AtomicU64::new(0);
 static LIMIT_CONN_DENIED: AtomicU64 = AtomicU64::new(0);
+static MIRROR_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static MIRROR_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 static START: OnceLock<Instant> = OnceLock::new();
 
@@ -108,6 +110,12 @@ pub fn record_limit_conn_allowed() {
 }
 pub fn record_limit_conn_denied() {
     LIMIT_CONN_DENIED.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_mirror_attempt() {
+    MIRROR_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+pub fn record_mirror_failure() {
+    MIRROR_FAILURES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// RAII guard for in-flight stream (TCP-proxy) connections.
@@ -242,6 +250,16 @@ pub fn render(version: &str) -> String {
             "elrond_limit_conn_denied_total",
             LIMIT_CONN_DENIED.load(Ordering::Relaxed),
             "Connections denied (503) by limit_conn.",
+        ),
+        (
+            "elrond_mirror_attempts_total",
+            MIRROR_ATTEMPTS.load(Ordering::Relaxed),
+            "Mirror (shadow) requests dispatched.",
+        ),
+        (
+            "elrond_mirror_failures_total",
+            MIRROR_FAILURES.load(Ordering::Relaxed),
+            "Mirror requests that errored, timed out, or had a bad URL.",
         ),
     ];
     for (name, value, help) in counters {

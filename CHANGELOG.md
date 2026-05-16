@@ -2,6 +2,63 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.31.0] - 2026-05-16
+
+**`mirror` — fire-and-forget traffic shadowing.** 80 unit tests.
+Pre-alpha.
+
+### Added
+
+- **`mirror <url>;`** at location level. Repeatable — every directive
+  adds one shadow target. URLs are templates (variables rendered per
+  request).
+- For each matched request, Elrond spawns one task per mirror with a
+  2-second timeout. Mirror responses are discarded. The original
+  request's response, status, body, and timing are **never** affected.
+- Mirrors receive `Authorization`, `Cookie`, `User-Agent` headers
+  from the original request and an explicit `X-Elrond-Mirror: 1`
+  marker so the shadow can distinguish replay traffic from real.
+- Metrics: `elrond_mirror_attempts_total`, `elrond_mirror_failures_total`.
+
+### Order
+
+`allow`/`deny` → `limit_req` → `limit_conn` → **`mirror`** →
+`auth_request` → `auth_basic` → action. Mirrors fire on every request
+the client is allowed to make, regardless of upstream auth — useful
+for shadow-traffic analytics where the auth service is itself the
+shadow target.
+
+### Verified end-to-end
+
+```nginx
+location / {
+    mirror http://127.0.0.1:7400/shadow$request_uri;
+    proxy_pass http://127.0.0.1:7300;
+}
+```
+
+```
+GET /first      → "production-resp"
+GET /second     → "production-resp"
+GET /api/three  → "production-resp"
+
+shadow log:
+  path=/shadow/first      ua=elrond-mirror mirror=1
+  path=/shadow/second     ua=elrond-mirror mirror=1
+  path=/shadow/api/three  ua=elrond-mirror mirror=1
+
+/metrics: elrond_mirror_attempts_total 3, _failures_total 0
+```
+
+### Known limitations
+
+- **Request bodies are not mirrored** (only method + URL + selected
+  headers). Body replication would require buffering every request,
+  which has its own correctness and memory costs; we'd rather not
+  do it silently.
+- Mirror failures don't affect the original response (by design) but
+  they do show up in metrics so you can graph them.
+
 ## [0.30.0] - 2026-05-16
 
 **`auth_request` — delegate authorization to an HTTP service.** 80 unit
@@ -1507,6 +1564,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.31.0]: https://github.com/nktkt/Elrond/releases/tag/v0.31.0
 [0.30.0]: https://github.com/nktkt/Elrond/releases/tag/v0.30.0
 [0.29.0]: https://github.com/nktkt/Elrond/releases/tag/v0.29.0
 [0.28.0]: https://github.com/nktkt/Elrond/releases/tag/v0.28.0

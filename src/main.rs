@@ -13,6 +13,7 @@ mod http_date;
 mod limit;
 mod logging;
 mod metrics;
+mod mirror;
 mod proxy;
 mod request_ctx;
 #[cfg(unix)]

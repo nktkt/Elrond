@@ -252,6 +252,10 @@ pub struct Location {
     /// response from the subrequest lets the original request proceed;
     /// 401/403/any non-2xx is returned to the client as-is.
     pub auth_request: Option<Template>,
+    /// `mirror <url>;` — fire-and-forget GET to a shadow target. Each
+    /// `mirror` directive adds one shadow; the original request flow is
+    /// unaffected (shadows are spawned, results discarded).
+    pub mirrors: Vec<Template>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

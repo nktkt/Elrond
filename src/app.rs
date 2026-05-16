@@ -139,6 +139,8 @@ pub struct LocationRt {
     pub proxy_read_timeout: Option<Duration>,
     /// `auth_request <url>;` — delegate authorization to an HTTP service.
     pub auth_request: Option<Template>,
+    /// `mirror <url>;` — fire-and-forget shadow requests.
+    pub mirrors: Arc<Vec<Template>>,
 }
 
 /// Process defaults applied when a directive does not specify otherwise.
@@ -672,6 +674,7 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 proxy_connect_timeout: loc.proxy_connect_timeout,
                 proxy_read_timeout: loc.proxy_read_timeout,
                 auth_request: loc.auth_request.clone(),
+                mirrors: Arc::new(loc.mirrors.clone()),
             };
             match &loc.kind {
                 LocationKind::Exact => exact_locs.push(location_rt),

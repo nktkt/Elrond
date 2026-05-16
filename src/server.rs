@@ -331,6 +331,19 @@ async fn handle(
                     None
                 };
 
+                // mirror — fire-and-forget shadow requests. Done before
+                // auth_request so the shadow trail isn't blocked by auth
+                // dependencies; mirrors are explicitly fire-and-forget and
+                // never affect the original response timing.
+                if !loc.mirrors.is_empty() {
+                    crate::mirror::dispatch(
+                        &loc.mirrors,
+                        &ctx,
+                        &headers,
+                        &method,
+                    );
+                }
+
                 // auth_request — delegate to an HTTP service. Done here so
                 // that limit_req / limit_conn already ran, but before the
                 // local auth_basic challenge and before the action runs.
