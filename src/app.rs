@@ -74,6 +74,8 @@ pub struct ServerState {
     /// `map` declarations, evaluated once per request before any
     /// location-level templates run.
     pub maps: Arc<Vec<crate::config::MapDecl>>,
+    /// `client_max_body_size`: 0 means unlimited. Defaults to 1 MiB.
+    pub client_max_body_size: usize,
     exact_locs: Vec<LocationRt>,
     prefix_locs: Vec<LocationRt>,
 }
@@ -113,7 +115,18 @@ pub struct LocationRt {
     pub limit_conn: Option<crate::limit::LimitConnApply>,
     /// `allow` / `deny` rules in declaration order.
     pub access_rules: Arc<Vec<crate::access::AccessRule>>,
+    /// `proxy_connect_timeout` for this location. `None` → process
+    /// default (10s).
+    pub proxy_connect_timeout: Option<Duration>,
+    /// `proxy_read_timeout` for the upstream exchange. `None` → process
+    /// default (60s).
+    pub proxy_read_timeout: Option<Duration>,
 }
+
+/// Process defaults applied when a directive does not specify otherwise.
+pub const DEFAULT_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_PROXY_READ_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_CLIENT_MAX_BODY_SIZE: usize = 1024 * 1024;
 
 pub enum ActionRt {
     Return {
@@ -547,6 +560,8 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
                 limit_req,
                 limit_conn,
                 access_rules: Arc::new(rules),
+                proxy_connect_timeout: loc.proxy_connect_timeout,
+                proxy_read_timeout: loc.proxy_read_timeout,
             };
             if loc.kind == LocationKind::Exact {
                 exact_locs.push(location_rt);
@@ -581,6 +596,9 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
             gzip: s.gzip.unwrap_or(false),
             gzip_types: s.gzip_types.clone(),
             maps: Arc::new(http.maps.clone()),
+            client_max_body_size: s
+                .client_max_body_size
+                .unwrap_or(DEFAULT_CLIENT_MAX_BODY_SIZE),
             exact_locs,
             prefix_locs,
         });
@@ -625,10 +643,33 @@ pub fn build(cfg: &Config) -> Result<Runtime, String> {
         entry.vhosts.push(vhost);
     }
 
-    // Materialize TLS server configs for grouped listeners.
+    // Materialize TLS server configs for grouped listeners. Use the
+    // strictest ssl_protocols set found across the server blocks on this
+    // address (intersection); if none specify, fall back to rustls
+    // defaults (TLS 1.2 + 1.3).
+    let mut protocols_by_addr: HashMap<SocketAddr, Vec<crate::config::TlsVersion>> =
+        HashMap::new();
+    for s in &http.servers {
+        if let Some(addr) = s.listen {
+            if s.tls && !s.ssl_protocols.is_empty() {
+                protocols_by_addr
+                    .entry(addr)
+                    .or_default()
+                    .extend(s.ssl_protocols.iter().copied());
+            }
+        }
+    }
     for cfg in listener_map.values_mut() {
         if !cfg.tls_paths.is_empty() {
-            cfg.tls = Some(crate::tls::build_server_config(&cfg.tls_paths)?);
+            let protocols = protocols_by_addr
+                .remove(&cfg.addr)
+                .map(|mut v| {
+                    v.sort_by_key(|p| matches!(p, crate::config::TlsVersion::Tls13));
+                    v.dedup();
+                    v
+                })
+                .unwrap_or_default();
+            cfg.tls = Some(crate::tls::build_server_config(&cfg.tls_paths, &protocols)?);
         }
     }
     let listeners: Vec<ListenerCfg> = order

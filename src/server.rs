@@ -184,6 +184,39 @@ async fn handle(
     let uri = req.uri().clone();
     let headers = req.headers().clone();
 
+    // Enforce client_max_body_size up front via Content-Length when the
+    // client advertised one. Streamed bodies without a length still
+    // accumulate against backend / cache buffering limits; this is the
+    // cheap, common-case guard against hostile uploads.
+    if state.client_max_body_size > 0 {
+        if let Some(len_header) = headers.get("content-length") {
+            if let Some(n) = len_header
+                .to_str()
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                if n > state.client_max_body_size {
+                    let resp = text(
+                        413,
+                        format!(
+                            "413 Request Entity Too Large (limit {} bytes)\n",
+                            state.client_max_body_size
+                        ),
+                    );
+                    metrics::record_request(413);
+                    info!(
+                        target: "access",
+                        "{} \"{} {}\" 413 (client_max_body_size)",
+                        peer.ip(),
+                        method,
+                        uri.path()
+                    );
+                    return Ok(resp);
+                }
+            }
+        }
+    }
+
     // Evaluate `map` declarations in declaration order with an accumulating
     // user-vars map, so a later map can reference an earlier map's output.
     // Recursion-by-loop is not supported (each map sees only what was
@@ -334,6 +367,7 @@ async fn handle(
                             balancer.clone(),
                             set_headers.clone(),
                             cache.clone(),
+                            loc.proxy_read_timeout,
                             req,
                             peer,
                             &ctx,

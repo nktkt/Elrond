@@ -19,7 +19,10 @@ use tracing::{debug, warn};
 
 use std::time::Instant;
 
-use crate::app::{Balancer, HeaderList, Peer, ProxyCache};
+use crate::app::{
+    Balancer, HeaderList, Peer, ProxyCache, DEFAULT_PROXY_CONNECT_TIMEOUT,
+    DEFAULT_PROXY_READ_TIMEOUT,
+};
 use crate::body::{full, text, BoxError, ElrondBody};
 use crate::cache::{self, CacheDecision, Entry};
 use crate::metrics;
@@ -43,9 +46,12 @@ const MAX_ATTEMPTS: usize = 3;
 fn client() -> &'static Client<HttpConnector, ElrondBody> {
     static CLIENT: OnceLock<Client<HttpConnector, ElrondBody>> = OnceLock::new();
     CLIENT.get_or_init(|| {
+        let mut connector = HttpConnector::new();
+        connector.set_connect_timeout(Some(DEFAULT_PROXY_CONNECT_TIMEOUT));
+        connector.set_nodelay(true);
         Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(30))
-            .build_http()
+            .build(connector)
     })
 }
 
@@ -58,10 +64,13 @@ pub async fn forward(
     balancer: Arc<Balancer>,
     set_headers: HeaderList,
     cache: Option<ProxyCache>,
+    read_timeout: Option<Duration>,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
 ) -> Response<ElrondBody> {
+    let _ = (DEFAULT_PROXY_CONNECT_TIMEOUT,); // already applied via connector
+    let effective_read = read_timeout.unwrap_or(DEFAULT_PROXY_READ_TIMEOUT);
     let retry_safe = matches!(
         *req.method(),
         Method::GET | Method::HEAD | Method::OPTIONS | Method::DELETE
@@ -80,6 +89,7 @@ pub async fn forward(
             balancer,
             set_headers,
             cache,
+            effective_read,
             req,
             client_peer,
             ctx,
@@ -109,7 +119,11 @@ pub async fn forward(
 
         metrics::record_proxy_attempt();
         let req2 = build_request(&parts, empty_body());
-        match forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx).await {
+        let attempt = forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx);
+        match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {
+            warn!("proxy: upstream '{}' read timed out after {:?}", upstream_peer.addr, effective_read);
+            Err(())
+        }) {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 if (500..600).contains(&status) {
@@ -140,6 +154,7 @@ async fn forward_once_with_incoming(
     balancer: Arc<Balancer>,
     set_headers: HeaderList,
     cache: Option<ProxyCache>,
+    effective_read: Duration,
     req: Request<Incoming>,
     client_peer: SocketAddr,
     ctx: &RequestCtx<'_>,
@@ -158,7 +173,14 @@ async fn forward_once_with_incoming(
     let boxed = body.map_err(|e| Box::new(e) as BoxError).boxed();
     let req2 = Request::from_parts(parts, boxed);
     metrics::record_proxy_attempt();
-    match forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx).await {
+    let attempt = forward_to_peer(&upstream_peer, &set_headers, req2, client_peer, ctx);
+    match tokio::time::timeout(effective_read, attempt).await.unwrap_or_else(|_| {
+        warn!(
+            "proxy: upstream '{}' read timed out after {:?}",
+            upstream_peer.addr, effective_read
+        );
+        Err(())
+    }) {
         Ok(resp) => {
             let status = resp.status().as_u16();
             if (500..600).contains(&status) {

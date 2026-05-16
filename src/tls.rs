@@ -61,8 +61,12 @@ fn build_certified(entry: &CertEntry) -> Result<Arc<CertifiedKey>, String> {
 /// Build a `rustls::ServerConfig` for a listener that may host several
 /// certificates keyed by SNI. The **first** entry serves as the default
 /// when the client offers no SNI or an unknown name.
+///
+/// `protocols` selects the TLS protocol versions to allow. An empty slice
+/// keeps rustls's default (TLS 1.2 + TLS 1.3).
 pub fn build_server_config(
     entries: &[CertEntry],
+    protocols: &[crate::config::TlsVersion],
 ) -> Result<Arc<rustls::ServerConfig>, String> {
     if entries.is_empty() {
         return Err("no TLS certificates configured for this listener".into());
@@ -80,9 +84,23 @@ pub fn build_server_config(
     }
     let default = default.expect("non-empty entries always set default");
     let resolver = Arc::new(SniResolver { by_name, default });
-    let mut cfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_cert_resolver(resolver);
+
+    let mut cfg = if protocols.is_empty() {
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(resolver)
+    } else {
+        let mut versions: Vec<&'static rustls::SupportedProtocolVersion> = Vec::new();
+        for p in protocols {
+            match p {
+                crate::config::TlsVersion::Tls12 => versions.push(&rustls::version::TLS12),
+                crate::config::TlsVersion::Tls13 => versions.push(&rustls::version::TLS13),
+            }
+        }
+        rustls::ServerConfig::builder_with_protocol_versions(&versions)
+            .with_no_client_auth()
+            .with_cert_resolver(resolver)
+    };
     // Offer HTTP/2 first, fall back to HTTP/1.1.
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(cfg))
@@ -90,15 +108,19 @@ pub fn build_server_config(
 
 /// Backwards-compatible single-cert builder: equivalent to one `CertEntry`
 /// with no `server_name` (acts as the default).
+#[allow(dead_code)]
 pub fn server_config(
     cert_path: &Path,
     key_path: &Path,
 ) -> Result<Arc<rustls::ServerConfig>, String> {
-    build_server_config(&[CertEntry {
-        server_name: None,
-        cert_path: cert_path.to_path_buf(),
-        key_path: key_path.to_path_buf(),
-    }])
+    build_server_config(
+        &[CertEntry {
+            server_name: None,
+            cert_path: cert_path.to_path_buf(),
+            key_path: key_path.to_path_buf(),
+        }],
+        &[],
+    )
 }
 
 /// rustls cert resolver: pick by SNI server name, fall back to default.

@@ -177,6 +177,9 @@ pub struct Server {
     pub tls: bool,
     pub ssl_certificate: Option<String>,
     pub ssl_certificate_key: Option<String>,
+    /// Allowed TLS protocol versions. Empty = rustls default (TLS 1.2 +
+    /// TLS 1.3). Tokens parsed: `TLSv1.2`, `TLSv1.3`.
+    pub ssl_protocols: Vec<TlsVersion>,
     /// `gzip on|off;` at server level. Cascades into locations that don't
     /// override it. `None` is treated as off.
     pub gzip: Option<bool>,
@@ -185,6 +188,16 @@ pub struct Server {
     /// Server-level `add_header` directives. Cascade into every location;
     /// location-level `add_header` is applied last and wins on conflicts.
     pub add_headers: Vec<(String, Template)>,
+    /// `client_max_body_size <size>;` — maximum allowed request body. `0`
+    /// means unlimited (Nginx-compatible). `None` falls back to the
+    /// process default (currently 1 MiB).
+    pub client_max_body_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsVersion {
+    Tls12,
+    Tls13,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +233,13 @@ pub struct Location {
     /// `allow X;` / `deny X;` rules in declaration order. First matching
     /// rule decides; an empty list lets everyone in.
     pub access_rules: Vec<(bool, String)>,
+    /// `proxy_connect_timeout <duration>;` — wall-clock budget for
+    /// reaching the upstream. `None` → process default (10s).
+    pub proxy_connect_timeout: Option<Duration>,
+    /// `proxy_read_timeout <duration>;` — wall-clock budget for the
+    /// whole upstream exchange after the connect succeeds. `None` →
+    /// process default (60s).
+    pub proxy_read_timeout: Option<Duration>,
     /// `proxy_cache <zone_name>;` — enables caching for this location.
     pub proxy_cache: Option<String>,
     /// `proxy_cache_key <template>;` — defaults to

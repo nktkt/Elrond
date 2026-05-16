@@ -297,10 +297,34 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
             "server_name" => server.server_name = d.args.first().cloned(),
             "ssl_certificate" => server.ssl_certificate = Some(arg1(d)?),
             "ssl_certificate_key" => server.ssl_certificate_key = Some(arg1(d)?),
-            "ssl_protocols" | "ssl_ciphers" | "ssl_prefer_server_ciphers"
+            "ssl_protocols" => {
+                for a in &d.args {
+                    server.ssl_protocols.push(match a.as_str() {
+                        "TLSv1.2" => TlsVersion::Tls12,
+                        "TLSv1.3" => TlsVersion::Tls13,
+                        other => {
+                            return Err(format!(
+                                "line {}: 'ssl_protocols' supports only TLSv1.2 / TLSv1.3 (got '{other}')",
+                                d.line
+                            ));
+                        }
+                    });
+                }
+            }
+            "ssl_ciphers" | "ssl_prefer_server_ciphers"
             | "ssl_session_cache" | "ssl_session_timeout" | "ssl_session_tickets"
             | "ssl_dhparam" | "ssl_ecdh_curve" | "ssl_stapling" => {
                 /* Accepted for forward compatibility; not yet applied. */
+            }
+            "client_max_body_size" => {
+                let v = arg1(d)?;
+                let n = parse_size(&v).ok_or_else(|| {
+                    format!(
+                        "line {}: invalid client_max_body_size '{v}'",
+                        d.line
+                    )
+                })?;
+                server.client_max_body_size = Some(n);
             }
             "gzip" => {
                 server.gzip = Some(parse_on_off(d.args.first().map(String::as_str), d.line)?);
@@ -345,8 +369,7 @@ fn build_server(dirs: &[Directive]) -> Result<Server, String> {
                 ))
             }
             "include" => {}
-            "access_log" | "error_log" | "index" | "client_max_body_size"
-            | "error_page" => {}
+            "access_log" | "error_log" | "index" | "error_page" => {}
             other => {
                 return Err(format!(
                     "line {}: unknown directive '{other}' in server context",
@@ -408,6 +431,8 @@ fn build_location(
     let mut limit_req: Option<(String, u32)> = None;
     let mut limit_conn: Option<(String, u32)> = None;
     let mut access_rules: Vec<(bool, String)> = Vec::new();
+    let mut proxy_connect_timeout: Option<std::time::Duration> = None;
+    let mut proxy_read_timeout: Option<std::time::Duration> = None;
     let mut proxy_cache: Option<String> = None;
     let mut proxy_cache_key: Option<Template> = None;
     let mut proxy_cache_valid: Vec<(Vec<u16>, std::time::Duration)> = Vec::new();
@@ -500,6 +525,20 @@ fn build_location(
                 None
             }
             "limit_req_status" | "limit_conn_status" => None,
+            "proxy_connect_timeout" => {
+                let v = arg1(d)?;
+                proxy_connect_timeout = Some(parse_duration(&v).ok_or_else(|| {
+                    format!("line {}: invalid proxy_connect_timeout '{v}'", d.line)
+                })?);
+                None
+            }
+            "proxy_read_timeout" => {
+                let v = arg1(d)?;
+                proxy_read_timeout = Some(parse_duration(&v).ok_or_else(|| {
+                    format!("line {}: invalid proxy_read_timeout '{v}'", d.line)
+                })?);
+                None
+            }
             "include" => None,
             "try_files" => {
                 if d.args.len() < 2 {
@@ -620,6 +659,8 @@ fn build_location(
         proxy_cache,
         proxy_cache_key,
         proxy_cache_valid,
+        proxy_connect_timeout,
+        proxy_read_timeout,
     })
 }
 

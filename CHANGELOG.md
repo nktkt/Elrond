@@ -2,6 +2,60 @@
 
 All notable changes to Elrond are documented in this file.
 
+## [0.25.0] - 2026-05-16
+
+**Production limits & timeouts.** 80 unit tests. Pre-alpha.
+
+The "no unbounded uploads, no hanging on a dead backend, no surprise
+TLS 1.2 downgrades" baseline. With v0.23 (SNI multi-cert), v0.22 (file
+logs / systemd), v0.19 (active health), and v0.5 (retry) this is the
+minimum a service manager and an SRE actually need.
+
+### Added
+
+- **`client_max_body_size <size>;`** at server level.
+  Accepts `k` / `m` / `g` suffixes; `0` = unlimited. Defaults to 1 MiB
+  (`DEFAULT_CLIENT_MAX_BODY_SIZE`).
+  Enforced at request entry by inspecting the `Content-Length` header:
+  oversize requests get an immediate `413 Request Entity Too Large`,
+  before any auth / proxy / cache work.
+- **`proxy_connect_timeout <duration>;`** — applied to the upstream
+  TCP connect via `HttpConnector::set_connect_timeout`. Defaults to
+  10 s globally.
+- **`proxy_read_timeout <duration>;`** at location level — caps the
+  total upstream exchange (connect + send + read). On expiry, the
+  attempt returns `502` and the peer is recorded as failed (so passive
+  health kicks in). Defaults to 60 s.
+- **`ssl_protocols TLSv1.2 TLSv1.3;`** at server level — restricts the
+  TLS protocol versions offered. Tokens other than `TLSv1.2` /
+  `TLSv1.3` are rejected at config-load. The strictest set across
+  server blocks sharing a `listen` is used for that listener.
+- `HttpConnector::set_nodelay(true)` on the proxy client — small win
+  for proxied small responses.
+
+### Verified end-to-end
+
+| scenario                                | result            |
+|-----------------------------------------|-------------------|
+| `POST 500 B` (under 1KB limit)          | `200`             |
+| `POST 2000 B` (over 1KB limit)          | `413`             |
+| backend sleeps 5 s, `proxy_read_timeout 1s` | `502` in `~1.003 s` |
+| `ssl_protocols TLSv1.3;` + TLS 1.2 client | handshake refused |
+| same listener, TLS 1.3 client            | `Protocol: TLSv1.3` |
+
+### Known follow-ups
+
+- `client_max_body_size` is server-level only (no location override
+  yet) and inspects `Content-Length`; chunked transfers without a
+  length still consume up to the backend / cache buffering caps.
+- `proxy_send_timeout` parsed but not yet wired (the unified
+  `proxy_read_timeout` covers it in practice).
+- `ssl_ciphers` / `ssl_ecdh_curve` / `ssl_session_*` still accepted
+  but not applied.
+- `proxy_connect_timeout` is a single process-wide setting on the
+  HTTP client; per-location override comes when we move to per-pool
+  clients.
+
 ## [0.24.0] - 2026-05-16
 
 **`try_files` (Phase 3 closer).** 80 unit tests. Pre-alpha.
@@ -1198,6 +1252,7 @@ First public release. Pre-alpha — not production-ready.
 - Virtual hosts: each `server` binds its own `listen`; `server_name` is logged only.
 - No `Range` requests, no `gzip`, no active health checks.
 
+[0.25.0]: https://github.com/nktkt/Elrond/releases/tag/v0.25.0
 [0.24.0]: https://github.com/nktkt/Elrond/releases/tag/v0.24.0
 [0.23.0]: https://github.com/nktkt/Elrond/releases/tag/v0.23.0
 [0.22.0]: https://github.com/nktkt/Elrond/releases/tag/v0.22.0
